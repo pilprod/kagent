@@ -159,6 +159,24 @@ app.kubernetes.io/component: controller
 {{- end }}
 
 {{/*
+Controller image reference. A digest wins over tags so release qualification can
+pin the exact image manifest that passed the candidate gates.
+*/}}
+{{- define "kagent.controller.image" -}}
+{{- $registry := .Values.controller.image.registry | default .Values.registry -}}
+{{- $repository := .Values.controller.image.repository -}}
+{{- $image := printf "%s/%s" $registry $repository -}}
+{{- if .Values.controller.image.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.controller.image.digest) -}}
+{{- fail "controller.image.digest must be a lowercase sha256 digest" -}}
+{{- end -}}
+{{- printf "%s@%s" $image .Values.controller.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $image (coalesce .Values.tag .Values.controller.image.tag .Chart.Version) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 UI labels
 */}}
 {{- define "kagent.ui.labels" -}}

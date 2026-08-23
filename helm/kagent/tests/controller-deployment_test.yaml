@@ -47,6 +47,31 @@ tests:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/kagent-dev/kagent/controller:v1.0.0
 
+  - it: should pin the controller image by digest when set
+    template: controller-deployment.yaml
+    set:
+      tag: "v1.0.0"
+      controller:
+        image:
+          registry: ghcr.io
+          repository: pilprod/kagent/controller
+          tag: "ignored-component-tag"
+          digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/pilprod/kagent/controller@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  - it: should reject an invalid controller image digest
+    template: controller-deployment.yaml
+    set:
+      controller:
+        image:
+          digest: "latest"
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.image.digest must be a lowercase sha256 digest"
+
   - it: should have correct controller resources
     template: controller-deployment.yaml
     asserts:
