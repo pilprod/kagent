@@ -1,0 +1,4 @@
+[submodule ".engineering-public"]
+	path = .engineering-public
+	url = https://github.com/pilprod/yourown-chat.git
+	branch = engineering-rules
