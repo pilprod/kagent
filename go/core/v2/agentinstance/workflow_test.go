@@ -2,29 +2,26 @@ package agentinstance
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestActorWorkflowLifecycle(t *testing.T) {
+func TestRuntimeWorkflowLifecycle(t *testing.T) {
 	instance := &apiv1alpha1.AgentInstance{
 		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
 		PreparedRevision: "revision-1", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
 	}
 	store := &lifecycleTestStore{
 		instance: instance,
-		revision: &dbpkg.RuntimeRevision{
-			Revision: "revision-1", ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
-		},
 	}
-	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
-	workflow := NewActorWorkflow(store, actors)
+	runtime := &lifecycleTestRuntime{}
+	workflow := NewRuntimeWorkflow(store, runtime)
 
 	created, err := workflow.Create(context.Background(), instance)
 	if err != nil {
@@ -33,13 +30,6 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || created.GetA2AAuthority() == "" {
 		t.Fatalf("created instance = %+v", created)
 	}
-	if len(actors.actors) != 1 {
-		t.Fatalf("actors = %v", actors.actors)
-	}
-	if actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]; actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
-		t.Fatalf("created Actor status = %s", actor.GetStatus().GetState())
-	}
-
 	suspended, err := workflow.Suspend(context.Background(), created)
 	if err != nil {
 		t.Fatal(err)
@@ -47,10 +37,6 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 	if suspended.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED || suspended.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
 		t.Fatalf("suspended instance = %+v", suspended)
 	}
-	if actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]; actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
-		t.Fatalf("suspended Actor status = %s", actor.GetStatus().GetState())
-	}
-
 	resumed, err := workflow.Resume(context.Background(), suspended)
 	if err != nil {
 		t.Fatal(err)
@@ -63,18 +49,46 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil || len(actors.actors) != 0 {
-		t.Fatalf("deleted instance = %+v, actors = %v", deleted, actors.actors)
+	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil {
+		t.Fatalf("deleted instance = %+v", deleted)
+	}
+	if got := strings.Join(runtime.calls, ","); got != "create,suspend,resume,delete" {
+		t.Fatalf("runtime calls = %q", got)
+	}
+}
+
+func TestRuntimeWorkflowRetriesJoinedOperationAfterDatabaseFailure(t *testing.T) {
+	instance := &apiv1alpha1.AgentInstance{
+		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
+		PreparedRevision: "revision-1", A2AAuthority: "private-runtime-authority",
+		State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
+	}
+	store := &lifecycleTestStore{instance: instance, failFinishOnce: true}
+	runtime := &lifecycleTestRuntime{}
+	workflow := NewRuntimeWorkflow(store, runtime)
+
+	if _, err := workflow.Suspend(t.Context(), instance); err == nil {
+		t.Fatal("Suspend() succeeded despite the injected database failure")
+	}
+	if store.instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || store.instance.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_SUSPEND {
+		t.Fatalf("failed Suspend() instance = %+v", store.instance)
+	}
+
+	suspended, err := workflow.Suspend(t.Context(), store.instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suspended.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED || suspended.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
+		t.Fatalf("retried Suspend() instance = %+v", suspended)
+	}
+	if got := strings.Join(runtime.calls, ","); got != "suspend,suspend" {
+		t.Fatalf("runtime calls = %q, want the joined operation to converge on retry", got)
 	}
 }
 
 type lifecycleTestStore struct {
-	instance *apiv1alpha1.AgentInstance
-	revision *dbpkg.RuntimeRevision
-}
-
-func (s *lifecycleTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
-	return s.revision, nil
+	instance       *apiv1alpha1.AgentInstance
+	failFinishOnce bool
 }
 
 func (s *lifecycleTestStore) MarkAgentInstanceReady(_ context.Context, _ string, authority string) (*apiv1alpha1.AgentInstance, error) {
@@ -88,6 +102,10 @@ func (s *lifecycleTestStore) TransitionAgentInstance(_ context.Context, instance
 	if s.instance.GetState() != expectedState || s.instance.GetOperation() != expectedOperation {
 		return s.instance, dbpkg.ErrAgentInstanceConflict
 	}
+	if s.failFinishOnce && expectedOperation == apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_SUSPEND && instance.GetOperation() == apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
+		s.failFinishOnce = false
+		return s.instance, errors.New("injected database failure")
+	}
 	s.instance = proto.Clone(instance).(*apiv1alpha1.AgentInstance)
 	return s.instance, nil
 }
@@ -97,44 +115,26 @@ func (s *lifecycleTestStore) DeleteAgentInstance(context.Context, string) error 
 	return nil
 }
 
-type lifecycleTestActors struct {
-	actors map[string]*ateapipb.Actor
+type lifecycleTestRuntime struct {
+	calls []string
 }
 
-func actorKey(atespace, name string) string { return atespace + "/" + name }
-
-func (*lifecycleTestActors) EnsureAtespace(context.Context, string) error { return nil }
-
-func (a *lifecycleTestActors) GetActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
-	actor := a.actors[actorKey(atespace, name)]
-	if actor == nil {
-		return nil, status.Error(codes.NotFound, "missing")
-	}
-	return actor, nil
+func (r *lifecycleTestRuntime) Create(context.Context, *apiv1alpha1.AgentInstance) (runtimebackend.Endpoint, error) {
+	r.calls = append(r.calls, "create")
+	return runtimebackend.Endpoint{A2AAuthority: "private-runtime-authority"}, nil
 }
 
-func (a *lifecycleTestActors) CreateActor(_ context.Context, atespace, name, templateNamespace, templateName string) (*ateapipb.Actor, error) {
-	actor := &ateapipb.Actor{
-		Metadata:               &ateapipb.ResourceMetadata{Atespace: atespace, Name: name, Uid: "actor-uid"},
-		ActorTemplateNamespace: templateNamespace, ActorTemplateName: templateName,
-		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
-	}
-	a.actors[actorKey(atespace, name)] = actor
-	return actor, nil
-}
-
-func (a *lifecycleTestActors) ResumeActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
-	actor := a.actors[actorKey(atespace, name)]
-	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
-	return actor, nil
-}
-
-func (a *lifecycleTestActors) SuspendActor(_ context.Context, atespace, name string) error {
-	a.actors[actorKey(atespace, name)].Status.State = ateapipb.ActorState_ACTOR_STATE_SUSPENDED
+func (r *lifecycleTestRuntime) Suspend(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "suspend")
 	return nil
 }
 
-func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string) error {
-	delete(a.actors, actorKey(atespace, name))
+func (r *lifecycleTestRuntime) Resume(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "resume")
+	return nil
+}
+
+func (r *lifecycleTestRuntime) Delete(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "delete")
 	return nil
 }

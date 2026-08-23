@@ -24,6 +24,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -48,17 +49,13 @@ type instanceStore interface {
 	ListAgentInstanceTasks(context.Context, string, string, a2atype.TaskState, *time.Time, int) ([]*a2atype.Task, int, error)
 }
 
-type runtimeDialer interface {
-	Dial(context.Context, *apiv1alpha1.AgentInstance) (*a2aclient.Client, error)
-}
-
 // Gateway is transport-neutral. The v0 deployment registers it on the
 // controller's gRPC server, while a standalone gateway can register the same
 // handler on its own server later.
 type Gateway struct {
 	store      instanceStore
 	authorizer auth.Authorizer
-	dialer     runtimeDialer
+	dialer     runtimebackend.Connector
 	gatewayURL string
 }
 
@@ -66,7 +63,7 @@ var _ a2asrv.RequestHandler = (*Gateway)(nil)
 
 // New returns the upstream A2A handler independently of any listener or gRPC
 // server, keeping deployment topology outside the gateway package.
-func New(store instanceStore, authorizer auth.Authorizer, dialer runtimeDialer, gatewayURL string) a2asrv.RequestHandler {
+func New(store instanceStore, authorizer auth.Authorizer, dialer runtimebackend.Connector, gatewayURL string) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler: &Gateway{
 			store: store, authorizer: authorizer, dialer: dialer,
