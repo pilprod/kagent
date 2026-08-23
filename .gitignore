@@ -1,5 +1,3 @@
-.engineering-private/
-
 ### dotenv template
 python/.env
 .env
