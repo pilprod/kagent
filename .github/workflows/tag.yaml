@@ -14,6 +14,7 @@ on:
 # GITHUB_REF = Tag ref of release refs/tags/<tag_name>
 jobs:
   push-images:
+    if: github.repository == 'kagent-dev/kagent'
     strategy:
       matrix:
         image:
@@ -62,6 +63,7 @@ jobs:
         fi
         make build-${{ matrix.image }}
   push-helm-chart:
+    if: github.repository == 'kagent-dev/kagent'
     needs:
     - push-images
     runs-on: ubuntu-latest
@@ -89,6 +91,7 @@ jobs:
         fi
         make helm-publish
   release-python-packages:
+    if: github.repository == 'kagent-dev/kagent'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -137,6 +140,7 @@ jobs:
         uv publish --token ${{ secrets.PYPI_TOKEN }}
 
   release:
+    if: github.repository == 'kagent-dev/kagent'
     # Only run release after images and helm chart are pushed
     # In the future we can take the chart from the helm action,
     # and build the CLI beforehand.
