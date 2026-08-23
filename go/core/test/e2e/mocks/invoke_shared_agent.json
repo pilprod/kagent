@@ -1,32 +1,35 @@
 {
   "openai": [
     {
-      "name": "initial_request",
+      "name": "delegate_to_shared_agent",
       "match": {
         "match_type": "contains",
         "message": {
-          "content": "add 3 and 5",
+          "content": "Ask the specialist",
           "role": "user"
-        }
+        },
+        "headers": [
+          {"name": "X-Kagent-E2E-Agent", "value": "root"}
+        ]
       },
       "response": {
-        "id": "chatcmpl-1",
+        "id": "chatcmpl-shared-root",
         "object": "chat.completion",
         "created": 1677652288,
         "model": "gpt-4.1-mini",
         "choices": [
           {
             "index": 0,
-            "role": "assistant",
             "message": {
               "content": "",
+              "role": "assistant",
               "tool_calls": [
                 {
-                  "id": "call_1",
+                  "id": "call_shared",
                   "type": "function",
                   "function": {
-                    "name": "add_numbers",
-                    "arguments": "{\"a\": 3, \"b\": 5}"
+                    "name": "transfer_to_agent",
+                    "arguments": "{\"agent_name\":\"specialist\"}"
                   }
                 }
               ]
@@ -37,27 +40,30 @@
       }
     },
     {
-      "name": "add_response",
+      "name": "shared_agent_response",
       "match": {
         "match_type": "contains",
         "message": {
-          "content": "8",
-          "role": "tool",
-          "tool_call_id": "call_1"
-        }
+          "content": "",
+          "role": "user"
+        },
+        "headers": [
+          {"name": "X-Kagent-E2E-Agent", "value": "child"}
+        ]
       },
       "response": {
-        "id": "call_1",
-        "object": "chat.completion.tool_message",
+        "id": "chatcmpl-shared-child",
+        "object": "chat.completion",
         "created": 1677652288,
         "model": "gpt-4.1-mini",
         "choices": [
           {
             "index": 0,
             "message": {
-              "content": "I have added 3 and 5. The result is 8.",
+              "content": "Answer from the shared specialist.",
               "role": "assistant"
-            }
+            },
+            "finish_reason": "stop"
           }
         ]
       }
