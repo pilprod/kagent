@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,6 +40,9 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/agentinstance"
 	"github.com/kagent-dev/kagent/go/core/v2/checkpoint"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
+	"github.com/kagent-dev/kagent/go/core/v2/externalgateway"
+	"github.com/kagent-dev/kagent/go/core/v2/externalruntime"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/client-go/tools/clientcmd"
@@ -49,6 +53,35 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	externalConfig, err := loadExternalGatewayConfig(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var externalBroker *externalgateway.Broker
+	var externalPlacement *externalruntime.StaticPlacement
+	var externalConnector *externalruntime.Connector
+	if externalConfig.Enabled {
+		deviceAuthenticator, err := newDeviceTokenAuthenticatorFromFile(
+			externalConfig.TokenFile,
+			externalConfig.DeviceID,
+			externalConfig.slots(),
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		externalBroker, err = externalgateway.NewBroker(externalConfig.Broker, deviceAuthenticator)
+		if err != nil {
+			log.Fatalf("configure external gateway broker: %v", err)
+		}
+		externalPlacement, err = externalruntime.NewStaticPlacement(externalConfig.placement())
+		if err != nil {
+			log.Fatalf("configure external runtime placement: %v", err)
+		}
+		externalConnector, err = externalruntime.NewConnector(externalBroker)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	dbURL, err := database.ResolveURL(env("POSTGRES_DATABASE_URL", "postgres://postgres:kagent@kagent-postgresql.kagent.svc.cluster.local:5432/postgres"), os.Getenv("POSTGRES_DATABASE_URL_FILE"))
 	if err != nil {
@@ -104,17 +137,33 @@ func main() {
 
 	authenticator := &authimpl.UnsecureAuthenticator{}
 	authorizer := &authimpl.NoopAuthorizer{}
-	runtimeLifecycle := v2substrate.NewLifecycle(store, actors)
-	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeLifecycle)
-	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
-	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
-	gatewayConnector, err := v2substrate.NewConnector(
+	substrateLifecycle := v2substrate.NewLifecycle(store, actors)
+	substrateConnector, err := v2substrate.NewConnector(
 		env("SUBSTRATE_ATENET_ROUTER_URL", legacysubstrate.DefaultAtenetRouterURL),
 		authenticator,
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
+	substrateBackend := runtimebackend.Backend{
+		Lifecycle: substrateLifecycle,
+		Connector: substrateConnector,
+	}
+	var externalBackend *runtimebackend.Backend
+	if externalConfig.Enabled {
+		externalLifecycle, err := externalruntime.NewLifecycle(store, externalPlacement, externalBroker, externalConfig.ProbeTimeout)
+		if err != nil {
+			log.Fatal(err)
+		}
+		externalBackend = &runtimebackend.Backend{Lifecycle: externalLifecycle, Connector: externalConnector}
+	}
+	runtimeRouter, err := newRuntimeBackendRouter(store, substrateBackend, externalBackend)
+	if err != nil {
+		log.Fatal(err)
+	}
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeRouter)
+	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
+	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
 	server, err := grpcserver.New(grpcserver.Config{
 		BindAddress:          env("GRPC_BIND_ADDRESS", ":8084"),
 		Reflection:           envBool("GRPC_REFLECTION"),
@@ -124,7 +173,7 @@ func main() {
 		TaskService:          taskservice.NewService(store),
 		AgentInstanceService: instances,
 		CheckpointService:    checkpoints,
-		A2AHandler: a2agateway.New(store, authorizer, gatewayConnector, instanceWorkflow,
+		A2AHandler: a2agateway.New(store, authorizer, runtimeRouter, instanceWorkflow,
 			env("A2A_GATEWAY_URL", "http://127.0.0.1:8084")),
 	})
 	if err != nil {
@@ -134,6 +183,20 @@ func main() {
 	health := &http.Server{Addr: ":8083", Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})}
+	var deviceServer *http.Server
+	var deviceListener net.Listener
+	if externalConfig.Enabled {
+		deviceServer, err = newExternalGatewayHTTPServer(externalConfig.BindAddress, externalBroker)
+		if err != nil {
+			log.Fatal(err)
+		}
+		deviceListener, err = net.Listen("tcp", deviceServer.Addr)
+		if err != nil {
+			log.Fatalf("listen for external gateway devices: %v", err)
+		}
+		defer deviceListener.Close()
+	}
+
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runtime.Start(ctx) })
 	group.Go(func() error { return manager.Start(ctx) })
@@ -148,6 +211,14 @@ func main() {
 		}
 		return nil
 	})
+	if externalConfig.Enabled {
+		group.Go(func() error {
+			if err := serveHTTP(ctx, deviceServer, deviceListener); err != nil {
+				return fmt.Errorf("serve external gateway devices: %w", err)
+			}
+			return nil
+		})
+	}
 	if err := group.Wait(); err != nil {
 		log.Fatal(err)
 	}
