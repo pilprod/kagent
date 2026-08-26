@@ -89,6 +89,8 @@ type HarnessAgentTemplateAdmission struct {
 // HarnessSpec defines a reusable runtime and its infrastructure policy.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.kagent) ? 1 : 0) + (has(self.codex) ? 1 : 0) + (has(self.claude) ? 1 : 0) == 1",message="exactly one of kagent, codex, or claude must be specified"
+// +kubebuilder:validation:XValidation:rule="!has(self.kagent) || (has(self.workload) && has(self.substrate))",message="kagent requires workload and substrate"
+// +kubebuilder:validation:XValidation:rule="has(self.kagent) || (!has(self.workload) && !has(self.substrate) && !has(self.env))",message="codex and claude forbid workload, substrate, and env"
 type HarnessSpec struct {
 	// +optional
 	Kagent *KagentHarness `json:"kagent,omitempty"`
@@ -99,8 +101,9 @@ type HarnessSpec struct {
 	// +optional
 	Claude *ClaudeHarness `json:"claude,omitempty"`
 
-	// +required
-	Workload HarnessWorkload `json:"workload"`
+	// Workload is required by kagent and forbidden by external runtimes.
+	// +optional
+	Workload *HarnessWorkload `json:"workload,omitempty"`
 
 	// +optional
 	// +kubebuilder:validation:MaxItems=100
@@ -108,8 +111,9 @@ type HarnessSpec struct {
 	// +listMapKey=name
 	Env []HarnessEnvVar `json:"env,omitempty"`
 
-	// +required
-	Substrate HarnessSubstratePolicy `json:"substrate"`
+	// Substrate is required by kagent and forbidden by external runtimes.
+	// +optional
+	Substrate *HarnessSubstratePolicy `json:"substrate,omitempty"`
 
 	// AllowedAgentTemplates selects AgentTemplates this Harness admits.
 	// When omitted, the Harness admits none.

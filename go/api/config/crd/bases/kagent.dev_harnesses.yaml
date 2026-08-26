@@ -163,8 +163,8 @@ spec:
                 description: KagentHarness selects the kagent runtime adapter.
                 type: object
               substrate:
-                description: HarnessSubstratePolicy contains the Substrate policy
-                  shared by all runtime variants.
+                description: Substrate is required by kagent and forbidden by external
+                  runtimes.
                 properties:
                   snapshotPolicy:
                     description: SnapshotPolicy configures runtime snapshot storage.
@@ -200,8 +200,8 @@ spec:
                 - message: workerPoolRef name must not be empty
                   rule: self.workerPoolRef.name.size() > 0
               workload:
-                description: HarnessWorkload identifies the immutable runtime image
-                  used by a Harness.
+                description: Workload is required by kagent and forbidden by external
+                  runtimes.
                 properties:
                   image:
                     description: Image is an OCI image reference pinned by sha256
@@ -211,14 +211,16 @@ spec:
                 required:
                 - image
                 type: object
-            required:
-            - substrate
-            - workload
             type: object
             x-kubernetes-validations:
             - message: exactly one of kagent, codex, or claude must be specified
               rule: '(has(self.kagent) ? 1 : 0) + (has(self.codex) ? 1 : 0) + (has(self.claude)
                 ? 1 : 0) == 1'
+            - message: kagent requires workload and substrate
+              rule: '!has(self.kagent) || (has(self.workload) && has(self.substrate))'
+            - message: codex and claude forbid workload, substrate, and env
+              rule: has(self.kagent) || (!has(self.workload) && !has(self.substrate)
+                && !has(self.env))
           status:
             description: HarnessStatus reports controller-derived capabilities and
               current health.
