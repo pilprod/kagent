@@ -36,6 +36,7 @@ import (
 	"github.com/kagent-dev/kagent/go/core/internal/service/kubecrud"
 	sessionservice "github.com/kagent-dev/kagent/go/core/internal/service/session"
 	taskservice "github.com/kagent-dev/kagent/go/core/internal/service/task"
+	"github.com/kagent-dev/kagent/go/core/pkg/auth"
 	"github.com/kagent-dev/kagent/go/core/pkg/migrations"
 	legacysubstrate "github.com/kagent-dev/kagent/go/core/pkg/sandboxbackend/substrate"
 	"github.com/kagent-dev/kagent/go/core/v2/a2agateway"
@@ -44,6 +45,7 @@ import (
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
 	"github.com/kagent-dev/kagent/go/core/v2/externalgateway"
 	"github.com/kagent-dev/kagent/go/core/v2/externalruntime"
+	v2mcp "github.com/kagent-dev/kagent/go/core/v2/mcp"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 	"golang.org/x/sync/errgroup"
@@ -177,6 +179,12 @@ func main() {
 	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeRouter)
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
+	gateway := a2agateway.New(store, authorizer, runtimeRouter, instanceWorkflow,
+		env("A2A_GATEWAY_URL", "http://127.0.0.1:8084"))
+	mcpHandler, err := v2mcp.New(instances, checkpoints, gateway)
+	if err != nil {
+		log.Fatal(err)
+	}
 	server, err := grpcserver.New(grpcserver.Config{
 		BindAddress:          env("GRPC_BIND_ADDRESS", ":8084"),
 		Reflection:           envBool("GRPC_REFLECTION"),
@@ -192,8 +200,7 @@ func main() {
 		CheckpointService:    checkpoints,
 		// The gateway and lifecycle service share one runtime workflow so a
 		// quiescent turn is suspended through the same backend that owns it.
-		A2AHandler: a2agateway.New(store, authorizer, runtimeRouter, instanceWorkflow,
-			env("A2A_GATEWAY_URL", "http://127.0.0.1:8084")),
+		A2AHandler: gateway,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -207,12 +214,14 @@ func main() {
 	// It answered every path with an empty 200 and ignored the request entirely, so
 	// a browser calling an RPC got a success with no body — which reads as a
 	// serialisation fault in the client rather than as a server that never had the
-	// endpoint. The router below hands anything that is not gRPC-Web to the same
-	// health response as before.
-	httpHandler := server.WebHandlerOr(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// endpoint. The router below serves MCP and hands other non-gRPC-Web requests
+	// to the same health response as before.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
-	health := &http.Server{Addr: env("HTTP_BIND_ADDRESS", ":8083"), Handler: httpHandler}
+	})
+	mux.Handle("/mcp", auth.AuthnMiddleware(authenticator)(mcpHandler))
+	health := &http.Server{Addr: env("HTTP_BIND_ADDRESS", ":8083"), Handler: server.WebHandlerOr(mux)}
 	var deviceServer *http.Server
 	var deviceListener net.Listener
 	if externalConfig.Enabled {
@@ -226,7 +235,6 @@ func main() {
 		}
 		defer deviceListener.Close()
 	}
-
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runtime.Start(ctx) })
 	group.Go(func() error { return manager.Start(ctx) })
