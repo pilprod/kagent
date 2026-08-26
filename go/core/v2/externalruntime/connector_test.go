@@ -17,6 +17,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/v2/externalgateway"
+	"github.com/kagent-dev/kagent/go/core/v2/externalprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,6 +119,37 @@ func TestConnectorPreservesOfflineError(t *testing.T) {
 	assert.Nil(t, result)
 	require.ErrorIs(t, err, externalgateway.ErrOffline)
 	assert.NotErrorIs(t, err, externalgateway.ErrUnknownOutcome)
+}
+
+func TestConnectorCarriesTopLevelProfileMetadataThroughBroker(t *testing.T) {
+	slot := externalgateway.SlotKey{DeviceID: "device-one", SlotID: "slot-a", Runtime: externalgateway.RuntimeCodex}
+	environment := newExternalEnvironment(t, slot)
+	session := environment.connect(t, slot)
+	client := environment.dial(t, slot)
+	request := newSendMessageRequest()
+	request.Metadata = map[string]any{
+		"https://kagent.dev/extensions/hitl/v1": "preserved",
+		externalprofile.ExtensionURI: map[string]any{
+			"version": "v1", "revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			"instruction": "review", "tools": []any{},
+		},
+	}
+
+	result := sendRequestAsync(t.Context(), client, request)
+	frame := environment.pollForFrame(t, session)
+	envelope := decodeRPCRequest(t, frame.Body)
+	var params struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(envelope.Params, &params))
+	assert.Equal(t, "preserved", params.Metadata["https://kagent.dev/extensions/hitl/v1"])
+	profile, ok := params.Metadata[externalprofile.ExtensionURI].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "review", profile["instruction"])
+	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", profile["revision"])
+
+	require.Equal(t, http.StatusNoContent, environment.complete(t, session, frame, encodeRPCMessageResponse(t, envelope.ID, "message-1")))
+	require.NoError(t, (<-result).err)
 }
 
 func TestConnectorPreservesUnknownOutcomeWithoutRetry(t *testing.T) {
@@ -275,6 +307,7 @@ type rpcRequestEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	ID      json.RawMessage `json:"id"`
+	Params  json.RawMessage `json:"params"`
 }
 
 type sendMessageOutcome struct {
@@ -423,9 +456,13 @@ func (e *externalEnvironment) post(t *testing.T, path string, input any) *http.R
 }
 
 func sendMessageAsync(ctx context.Context, client *a2aclient.Client) <-chan sendMessageOutcome {
+	return sendRequestAsync(ctx, client, newSendMessageRequest())
+}
+
+func sendRequestAsync(ctx context.Context, client *a2aclient.Client, request *a2a.SendMessageRequest) <-chan sendMessageOutcome {
 	result := make(chan sendMessageOutcome, 1)
 	go func() {
-		message, err := client.SendMessage(ctx, newSendMessageRequest())
+		message, err := client.SendMessage(ctx, request)
 		result <- sendMessageOutcome{result: message, err: err}
 	}()
 	return result

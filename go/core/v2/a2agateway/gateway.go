@@ -28,6 +28,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
+	"github.com/kagent-dev/kagent/go/core/v2/externalprofile"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
@@ -431,7 +432,7 @@ func (g *Gateway) GetExtendedAgentCard(ctx context.Context, _ *a2atype.GetExtend
 	// erase. A client discovers HITL by reading this card, so wiping it made
 	// answering an agent's question undiscoverable while the card still rendered
 	// perfectly.
-	extensions := card.Capabilities.Extensions
+	extensions := publicExtensions(card.Capabilities.Extensions)
 	card.Capabilities = a2atype.AgentCapabilities{Streaming: true, ExtendedAgentCard: true, Extensions: extensions}
 	card.SecurityRequirements = nil
 	card.SecuritySchemes = nil
@@ -458,12 +459,18 @@ func (g *Gateway) prepareSend(ctx context.Context, req *a2atype.SendMessageReque
 	if req == nil || req.Message == nil {
 		return nil, a2atype.NewError(a2atype.ErrInvalidRequest, "message is required")
 	}
+	if _, reserved := req.Message.Metadata[externalprofile.ExtensionURI]; reserved {
+		return nil, a2atype.NewError(a2atype.ErrInvalidRequest, "external runtime profile metadata is only valid at request level")
+	}
 	apia2a.ClearStoredTask(req.Message)
 	if req.Message.ID == "" {
 		return nil, a2atype.NewError(a2atype.ErrInvalidRequest, "message ID is required")
 	}
 	if req.Message.ContextID != "" && req.Message.ContextID != instance.GetId() {
 		return nil, a2atype.NewError(a2atype.ErrInvalidRequest, "message context does not match AgentInstance")
+	}
+	if err := g.attachExternalProfile(ctx, instance, req); err != nil {
+		return nil, err
 	}
 	if req.Message.TaskID != "" {
 		return g.prepareReply(ctx, instance, req)
@@ -494,6 +501,63 @@ func (g *Gateway) prepareSend(ctx context.Context, req *a2atype.SendMessageReque
 	}
 	req.Message.TaskID = stored.ID
 	return &preparedSend{instance: instance, task: stored, dispatch: created}, nil
+}
+
+// attachExternalProfile replaces, rather than trusts, the reserved metadata
+// value after the public gateway has authenticated and resolved the exact
+// AgentInstance. Only the persisted immutable revision can contribute the
+// instruction and logical tool allowlist sent to an external client.
+func (g *Gateway) attachExternalProfile(ctx context.Context, instance *apiv1alpha1.AgentInstance, req *a2atype.SendMessageRequest) error {
+	preparedRevision := instance.GetPreparedRevision()
+	revision, err := g.store.GetRuntimeRevision(ctx, preparedRevision)
+	if err != nil {
+		ctrllog.FromContext(ctx).Error(err, "failed to load AgentInstance runtime revision", "revision", preparedRevision)
+		return a2atype.NewError(a2atype.ErrInternalError, "failed to prepare runtime dispatch")
+	}
+	if revision == nil || revision.Revision != preparedRevision {
+		ctrllog.FromContext(ctx).Error(errors.New("runtime revision identity mismatch"), "runtime revision identity does not match AgentInstance", "revision", preparedRevision)
+		return a2atype.NewError(a2atype.ErrInternalError, "failed to prepare runtime dispatch")
+	}
+	if err := revision.ValidateBackendIdentity(); err != nil {
+		ctrllog.FromContext(ctx).Error(err, "invalid AgentInstance runtime revision", "revision", preparedRevision)
+		return a2atype.NewError(a2atype.ErrInternalError, "failed to prepare runtime dispatch")
+	}
+	if revision.BackendKind != dbpkg.RuntimeBackendKindExternal {
+		if _, reserved := req.Metadata[externalprofile.ExtensionURI]; reserved {
+			return a2atype.NewError(a2atype.ErrInvalidRequest, "external runtime profile metadata is not valid for this AgentInstance")
+		}
+		return nil
+	}
+
+	profile, err := externalprofile.Decode(revision.ExternalProfile)
+	if err != nil {
+		ctrllog.FromContext(ctx).Error(err, "invalid external runtime profile", "revision", preparedRevision)
+		return a2atype.NewError(a2atype.ErrInternalError, "failed to prepare runtime dispatch")
+	}
+	envelope, err := externalprofile.NewEnvelope(preparedRevision, profile)
+	if err != nil {
+		ctrllog.FromContext(ctx).Error(err, "invalid external runtime revision identity", "revision", preparedRevision)
+		return a2atype.NewError(a2atype.ErrInternalError, "failed to prepare runtime dispatch")
+	}
+	req.Metadata = maps.Clone(req.Metadata)
+	if req.Metadata == nil {
+		req.Metadata = make(map[string]any, 1)
+	}
+	req.Metadata[externalprofile.ExtensionURI] = envelope.Metadata()
+	return nil
+}
+
+func publicExtensions(extensions []a2atype.AgentExtension) []a2atype.AgentExtension {
+	if len(extensions) == 0 {
+		return nil
+	}
+	public := make([]a2atype.AgentExtension, 0, len(extensions))
+	for _, extension := range extensions {
+		if extension.URI != externalprofile.ExtensionURI {
+			public = append(public, extension)
+		}
+	}
+	return public
 }
 
 func (g *Gateway) prepareReply(ctx context.Context, instance *apiv1alpha1.AgentInstance, req *a2atype.SendMessageRequest) (*preparedSend, error) {
