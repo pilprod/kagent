@@ -125,6 +125,33 @@ func newGateway(store instanceStore, authorizer auth.Authorizer, dialer runtimeD
 }
 
 func (g *Gateway) instance(ctx context.Context, verb auth.Verb) (*apiv1alpha1.AgentInstance, error) {
+	instance, err := g.storedInstance(ctx, verb)
+	if err != nil {
+		return nil, err
+	}
+	if instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY {
+		return nil, a2atype.NewError(a2atype.ErrUnsupportedOperation, fmt.Sprintf("AgentInstance is %s", instance.GetState()))
+	}
+	return instance, nil
+}
+
+/*
+ * Resolves the routed instance, whatever state it is in.
+ *
+ * Authorization is unchanged — an instance is still read as its creator, and a share
+ * token still only widens reach to the instance it names. What is dropped is the
+ * readiness requirement, because it was never this function's to impose: a task list
+ * and a task come out of the store, and the store does not care whether the instance
+ * currently holds a worker.
+ *
+ * Requiring READY for those reads made a suspended conversation unreadable, which is a
+ * real problem now that conversations give their workers back at the end of every turn:
+ * opening one to re-read what was said reported "AgentInstance is
+ * AGENT_INSTANCE_STATE_SUSPENDED" as if the record had been lost. The alternative —
+ * resuming on open — would claim a worker every time somebody glanced at a transcript,
+ * which is exactly what suspending them was meant to stop.
+ */
+func (g *Gateway) storedInstance(ctx context.Context, verb auth.Verb) (*apiv1alpha1.AgentInstance, error) {
 	namespace, id, err := route(ctx)
 	if err != nil {
 		return nil, a2atype.NewError(a2atype.ErrInvalidRequest, err.Error())
@@ -134,19 +161,33 @@ func (g *Gateway) instance(ctx context.Context, verb auth.Verb) (*apiv1alpha1.Ag
 		return nil, a2atype.NewError(a2atype.ErrUnauthenticated, "authentication is required")
 	}
 	principal := session.Principal()
-	if err := g.authorizer.Check(ctx, principal, verb, auth.Resource{Type: "AgentInstance", Name: namespace + "/" + id}); err != nil {
+
+	/*
+	 * A share token is authority over one instance, and only that one.
+	 *
+	 * The visitor is still authenticated as themselves — a share widens what an
+	 * account may reach, it does not replace authentication — so the ordinary
+	 * authorization check is skipped only when the token names *this* instance, and
+	 * the record is then read as its owner. Reading it as the visitor would find
+	 * nothing, because an instance is scoped to its creator.
+	 *
+	 * The read-only half is enforced in the interceptor, which refuses a
+	 * write-access RPC for a read-only share before this is reached.
+	 */
+	creator := principal.User.ID
+	share, hasShare := auth.ShareContextFrom(ctx)
+	if hasShare && share.IsForAgentInstance(id) {
+		creator = share.UserID
+	} else if err := g.authorizer.Check(ctx, principal, verb, auth.Resource{Type: "AgentInstance", Name: namespace + "/" + id}); err != nil {
 		return nil, a2atype.NewError(a2atype.ErrUnauthorized, "not authorized")
 	}
-	instance, err := g.store.GetAgentInstance(ctx, namespace, id, principal.User.ID)
+	instance, err := g.store.GetAgentInstance(ctx, namespace, id, creator)
 	if errors.Is(err, dbpkg.ErrNotFound) {
 		return nil, a2atype.NewError(a2atype.ErrUnauthorized, "not authorized")
 	}
 	if err != nil {
 		ctrllog.FromContext(ctx).Error(err, "failed to load AgentInstance", "namespace", namespace, "id", id)
 		return nil, a2atype.NewError(a2atype.ErrInternalError, "failed to load AgentInstance")
-	}
-	if instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY {
-		return nil, a2atype.NewError(a2atype.ErrUnsupportedOperation, fmt.Sprintf("AgentInstance is %s", instance.GetState()))
 	}
 	return instance, nil
 }
@@ -168,7 +209,7 @@ func route(ctx context.Context) (namespace, id string, err error) {
 }
 
 func (g *Gateway) GetTask(ctx context.Context, req *a2atype.GetTaskRequest) (*a2atype.Task, error) {
-	instance, err := g.instance(ctx, auth.VerbGet)
+	instance, err := g.storedInstance(ctx, auth.VerbGet)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +228,7 @@ func (g *Gateway) GetTask(ctx context.Context, req *a2atype.GetTaskRequest) (*a2
 }
 
 func (g *Gateway) ListTasks(ctx context.Context, req *a2atype.ListTasksRequest) (*a2atype.ListTasksResponse, error) {
-	instance, err := g.instance(ctx, auth.VerbGet)
+	instance, err := g.storedInstance(ctx, auth.VerbGet)
 	if err != nil {
 		return nil, err
 	}
@@ -383,10 +424,17 @@ func (g *Gateway) GetExtendedAgentCard(ctx context.Context, _ *a2atype.GetExtend
 	}
 
 	// The compiled card provides immutable template metadata. Public transport,
-	// capabilities, security, and signatures belong to the gateway instead of
-	// the private runtime that produced that card.
+	// security, and signatures belong to the gateway instead of the private
+	// runtime that produced that card.
 	card.SupportedInterfaces = []*a2atype.AgentInterface{a2atype.NewAgentInterface(g.gatewayURL, a2atype.TransportProtocolGRPC)}
-	card.Capabilities = a2atype.AgentCapabilities{Streaming: true, ExtendedAgentCard: true}
+	// Extensions are the exception, and replacing the whole capabilities struct
+	// used to drop them. They describe what the runtime behind this gateway can
+	// negotiate — human-in-the-loop among them — which is not the gateway's to
+	// erase. A client discovers HITL by reading this card, so wiping it made
+	// answering an agent's question undiscoverable while the card still rendered
+	// perfectly.
+	extensions := card.Capabilities.Extensions
+	card.Capabilities = a2atype.AgentCapabilities{Streaming: true, ExtendedAgentCard: true, Extensions: extensions}
 	card.SecurityRequirements = nil
 	card.SecuritySchemes = nil
 	card.Signatures = nil
@@ -599,6 +647,28 @@ func taskForEvent(task *a2atype.Task, event a2atype.Event) (*a2atype.Task, error
 	updated, err := a2aevent.ApplyUpdate(task, event)
 	if err != nil {
 		return nil, a2atype.NewError(a2atype.ErrInternalError, fmt.Sprintf("apply runtime task event: %v", err))
+	}
+	/*
+	 * The runtime may send a whole task, and it does not always remember as much as
+	 * the store does.
+	 *
+	 * `ApplyUpdate` takes the runtime's version where one is given, which is right for
+	 * status and artifacts and wrong for history: a runtime that has been quiesced and
+	 * resumed can answer with a task carrying no history at all, and persisting that
+	 * replaces a transcript with an empty one. That is not a display problem — the
+	 * messages are gone from the record, and the conversation opens blank.
+	 *
+	 * Seen doing exactly that: a conversation parked on a question, answered after the
+	 * runtime had been suspended, came back as an eighty-byte task while its six events
+	 * sat untouched in the store beside it.
+	 *
+	 * So history only ever grows here. A runtime that genuinely has more is believed;
+	 * one that has less is not allowed to forget on the store's behalf.
+	 */
+	if len(updated.History) < len(task.History) {
+		kept := *updated
+		kept.History = task.History
+		return &kept, nil
 	}
 	return updated, nil
 }
