@@ -53,6 +53,7 @@ import (
 	common "github.com/kagent-dev/kagent/go/core/internal/utils"
 	"github.com/kagent-dev/kagent/go/core/v2/agentinstance"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
+	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -523,7 +524,8 @@ func Start(getExtensionConfig GetExtensionConfig, extraSources []migrations.Sour
 		setupLog.Error(err, "unable to initialize AgentTemplate preparation")
 		os.Exit(1)
 	}
-	instanceWorkflow := agentinstance.NewActorWorkflow(dbClient, substrateAteClient)
+	runtimeLifecycle := v2substrate.NewLifecycle(dbClient, substrateAteClient)
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(dbClient, runtimeLifecycle)
 	if err := mgr.Add(v2Runtime); err != nil {
 		setupLog.Error(err, "unable to register v2 KRT runtime")
 		os.Exit(1)

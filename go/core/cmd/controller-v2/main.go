@@ -39,6 +39,7 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/agentinstance"
 	"github.com/kagent-dev/kagent/go/core/v2/checkpoint"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
+	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -103,10 +104,11 @@ func main() {
 
 	authenticator := &authimpl.UnsecureAuthenticator{}
 	authorizer := &authimpl.NoopAuthorizer{}
-	instanceWorkflow := agentinstance.NewActorWorkflow(store, actors)
+	runtimeLifecycle := v2substrate.NewLifecycle(store, actors)
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeLifecycle)
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
-	gatewayDialer, err := a2agateway.NewRuntimeDialer(
+	gatewayConnector, err := v2substrate.NewConnector(
 		env("SUBSTRATE_ATENET_ROUTER_URL", legacysubstrate.DefaultAtenetRouterURL),
 		authenticator,
 	)
@@ -122,7 +124,7 @@ func main() {
 		TaskService:          taskservice.NewService(store),
 		AgentInstanceService: instances,
 		CheckpointService:    checkpoints,
-		A2AHandler: a2agateway.New(store, authorizer, gatewayDialer, instanceWorkflow,
+		A2AHandler: a2agateway.New(store, authorizer, gatewayConnector, instanceWorkflow,
 			env("A2A_GATEWAY_URL", "http://127.0.0.1:8084")),
 	})
 	if err != nil {
