@@ -1,0 +1,22 @@
+{{- $externalGateway := .Values.controller.externalGateway | default dict -}}
+{{- if $externalGateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kagent.fullname" . }}-external-gateway
+  namespace: {{ include "kagent.namespace" . }}
+  labels:
+    {{- include "kagent.controller.labels" . | nindent 4 }}
+spec:
+  # The bearer-token transport is intentionally reachable only inside the
+  # cluster. TLS/Cloudflare exposure must terminate in a separately managed
+  # ingress or tunnel and cannot inherit controller.service.type.
+  type: ClusterIP
+  ports:
+    - port: {{ include "kagent.controller.externalGateway.port" . | int }}
+      targetPort: ext-gateway
+      protocol: TCP
+      name: external-gateway
+  selector:
+    {{- include "kagent.controller.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "controller": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Controller replica count; must be 1 while the external gateway is enabled."
+        },
+        "externalGateway": {
+          "type": "object",
+          "description": "Reverse gateway for locally running Codex and Claude Code agents.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the external runtime gateway."
+            },
+            "deviceId": {
+              "type": "string",
+              "maxLength": 63,
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Stable lowercase DNS label for the external device."
+            },
+            "codexSlotId": {
+              "type": "string",
+              "maxLength": 63,
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Stable lowercase DNS label for the Codex runtime slot, or empty."
+            },
+            "claudeSlotId": {
+              "type": "string",
+              "maxLength": 63,
+              "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "Stable lowercase DNS label for the Claude Code runtime slot, or empty."
+            },
+            "existingSecret": {
+              "type": "object",
+              "description": "Reference to an existing Secret; the chart never renders token material.",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^$|^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+                  "description": "Secret name in the kagent release namespace."
+                },
+                "key": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^$|^[A-Za-z0-9._-]+$",
+                  "description": "Secret data key containing the bearer token."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

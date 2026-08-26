@@ -1,3 +1,5 @@
+{{- include "kagent.controller.externalGateway.validate" . }}
+{{- $externalGateway := .Values.controller.externalGateway | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,6 +14,12 @@ metadata:
     {{- include "kagent.controller.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.controller.replicas }}
+  {{- if $externalGateway.enabled }}
+  # Gateway sessions are process-local. Recreate avoids a rolling-update surge
+  # briefly running two independently authenticated brokers.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "kagent.controller.selectorLabels" . | nindent 6 }}
@@ -38,7 +46,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "kagent.fullname" . }}-controller
-      {{- if or (gt (len .Values.controller.volumes) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) }}
+      {{- if or (gt (len .Values.controller.volumes) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) $externalGateway.enabled }}
       volumes:
       {{- if and .Values.controller.substrate .Values.controller.substrate.enabled }}
       - name: substrate-servicedns
@@ -57,6 +65,15 @@ spec:
               signerName: podidentity.podcert.ate.dev/identity
               keyType: ECDSAP256
               credentialBundlePath: credential-bundle.pem
+      {{- end }}
+      {{- if $externalGateway.enabled }}
+      - name: external-gateway-token
+        secret:
+          secretName: {{ $externalGateway.existingSecret.name | quote }}
+          defaultMode: 0444
+          items:
+            - key: {{ $externalGateway.existingSecret.key | quote }}
+              path: token
       {{- end }}
       {{- with .Values.controller.volumes }}
       {{- toYaml . | nindent 6 }}
@@ -138,6 +155,27 @@ spec:
             - name: GRPC_TLS_KEY_FILE
               value: {{ . | quote }}
             {{- end }}
+            # Keep the disabled state explicit so controller.envFrom cannot
+            # activate the gateway without the corresponding Secret mount,
+            # Service port, placement validation, and single-replica policy.
+            - name: EXTERNAL_GATEWAY_ENABLED
+              value: {{ ($externalGateway.enabled | default false) | quote }}
+            {{- if $externalGateway.enabled }}
+            - name: EXTERNAL_GATEWAY_BIND_ADDRESS
+              value: ":{{ include "kagent.controller.externalGateway.port" . }}"
+            - name: EXTERNAL_GATEWAY_TOKEN_FILE
+              value: {{ include "kagent.controller.externalGateway.tokenFile" . | quote }}
+            - name: EXTERNAL_GATEWAY_DEVICE_ID
+              value: {{ $externalGateway.deviceId | quote }}
+            {{- with $externalGateway.codexSlotId }}
+            - name: EXTERNAL_GATEWAY_CODEX_SLOT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $externalGateway.claudeSlotId }}
+            - name: EXTERNAL_GATEWAY_CLAUDE_SLOT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.controller.env }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -170,6 +208,13 @@ spec:
             - name: grpc
               containerPort: {{ .Values.controller.service.ports.grpc }}
               protocol: TCP
+            {{- if $externalGateway.enabled }}
+            # Container port names use IANA service-name rules (15 characters);
+            # the Service port retains the requested external-gateway name.
+            - name: ext-gateway
+              containerPort: {{ include "kagent.controller.externalGateway.port" . | int }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.controller.metrics.enabled }}
             - name: metrics
               containerPort: {{ include "kagent.controller.metricsPort" . | int }}
@@ -202,7 +247,7 @@ spec:
               port: http
             periodSeconds: 30
           {{- end }}
-          {{- if or (gt (len .Values.controller.volumeMounts) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) }}
+          {{- if or (gt (len .Values.controller.volumeMounts) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) $externalGateway.enabled }}
           volumeMounts:
             {{- if and .Values.controller.substrate .Values.controller.substrate.enabled }}
             - name: substrate-servicedns
@@ -210,6 +255,11 @@ spec:
               readOnly: true
             - name: substrate-podidentity
               mountPath: /run/substrate-podidentity
+              readOnly: true
+            {{- end }}
+            {{- if $externalGateway.enabled }}
+            - name: external-gateway-token
+              mountPath: {{ include "kagent.controller.externalGateway.tokenMountPath" . }}
               readOnly: true
             {{- end }}
             {{- with .Values.controller.volumeMounts }}
