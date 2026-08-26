@@ -105,7 +105,6 @@ jobs:
             --set ui.replicas=0
             --set kagent-tools.enabled=false
             --set grafana-mcp.enabled=false
-            --set querydoc.enabled=false
             --set controller.substrate.enabled=true
             --set controller.substrate.ateApiEndpoint=dns:///api.ate-system.svc:443
             --set controller.substrate.atenetRouterURL=http://atenet-router.ate-system.svc:80
@@ -310,6 +309,11 @@ jobs:
 
       - name: Run Go unit tests
         working-directory: go
+        env:
+          # Runners are ephemeral, so Ryuk's leaked-container cleanup buys nothing,
+          # and its single session-scoped reaper is contended by the parallel package
+          # processes of `go test ./...`, intermittently timing out the Postgres tests.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
         run: |
           make setup-envtest
           export KUBEBUILDER_ASSETS="$(make -s envtest-path)"
@@ -339,7 +343,6 @@ jobs:
       - name: Run helm unit tests
         run: |
           helm unittest helm/kagent
-          helm unittest helm/tools/querydoc
           helm unittest helm/tools/grafana-mcp
 
   ui-tests:
@@ -396,9 +399,6 @@ jobs:
           - kagent-adk
           - cli
           - golang-adk
-          - acp-sandbox-hermes
-          - acp-sandbox-openclaw
-          - acp-sandbox-claude
     runs-on: ubuntu-latest
     services:
       registry:
