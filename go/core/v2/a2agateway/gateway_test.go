@@ -3,6 +3,7 @@ package a2agateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"net"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -678,6 +680,26 @@ func TestGatewayKeepsTaskActiveWhenQuiesceFails(t *testing.T) {
 	}
 	if workflow.quiesceCalls != 1 || len(store.stored) != 1 || store.active == nil {
 		t.Fatalf("quiescence calls = %d, stored events = %d, active task = %#v", workflow.quiesceCalls, len(store.stored), store.active)
+	}
+}
+
+func TestGatewayPersistsTerminalTaskWithoutUnsupportedSnapshot(t *testing.T) {
+	store := &gatewayTestStore{instance: gatewayTestInstance()}
+	workflow := &gatewayTestWorkflow{err: fmt.Errorf("external runtime checkpoint: %w", runtimebackend.ErrCheckpointUnsupported)}
+	gateway := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{client: gatewayTestClient(t, &gatewayTestRuntime{})}, workflow, gatewayTestURL)
+
+	var events int
+	for event, err := range gateway.SendStreamingMessage(gatewayTestContext(), gatewayTestRequest()) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event == nil {
+			t.Fatal("stream returned a nil terminal event")
+		}
+		events++
+	}
+	if events != 1 || workflow.quiesceCalls != 1 || len(store.stored) != 2 || store.active != nil || store.snapshot != nil {
+		t.Fatalf("events = %d, quiescence calls = %d, stored events = %d, active task = %#v, snapshot = %#v", events, workflow.quiesceCalls, len(store.stored), store.active, store.snapshot)
 	}
 }
 

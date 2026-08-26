@@ -612,7 +612,9 @@ func (g *Gateway) storeEvent(ctx context.Context, instance *apiv1alpha1.AgentIns
 	if task != nil && isQuiescent(task.Status.State) {
 		var err error
 		snapshot, err = g.workflow.Quiesce(ctx, instance)
-		if err != nil {
+		if errors.Is(err, runtimebackend.ErrCheckpointUnsupported) {
+			snapshot = nil
+		} else if err != nil {
 			return fmt.Errorf("quiesce AgentInstance runtime: %w", err)
 		}
 	}
