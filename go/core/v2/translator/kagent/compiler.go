@@ -11,6 +11,7 @@ import (
 
 	a2atype "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/kagent-dev/kagent/go/api/adk"
+	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	"github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"github.com/kagent-dev/kagent/go/core/internal/utils"
 	"github.com/kagent-dev/kagent/go/core/pkg/env"
@@ -46,6 +47,9 @@ type compiledAgent struct {
 }
 
 func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput) (*v2translator.Revision, error) {
+	if err := validateInput(input); err != nil {
+		return nil, err
+	}
 	compiled, err := c.compileAgent(ctx, input.Root)
 	if err != nil {
 		return nil, err
@@ -112,6 +116,7 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		Namespace:          template.Namespace,
 		AgentTemplateName:  template.Name,
 		HarnessName:        harness.Name,
+		BackendKind:        dbpkg.RuntimeBackendKindSubstrate,
 		Image:              harness.Spec.Workload.Image,
 		Environment:        environment,
 		ConfigJSON:         configJSON,
@@ -121,6 +126,23 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		Provenance:         provenance,
 		EgressDestinations: egressDestinations,
 	}, nil
+}
+
+func validateInput(input *v2translator.HarnessInput) error {
+	if input == nil || input.Harness == nil {
+		return v2translator.NewValidationError("kagent compiler requires a Harness")
+	}
+	if input.Root == nil || input.Root.Template == nil || input.Root.ModelConfig == nil {
+		return v2translator.NewValidationError("kagent compiler requires a resolved root AgentTemplate and ModelConfig")
+	}
+	harness := input.Harness
+	if harness.Spec.Kagent == nil || harness.Spec.Codex != nil || harness.Spec.Claude != nil {
+		return v2translator.NewValidationError("kagent compiler requires the kagent Harness runtime")
+	}
+	if harness.Spec.Workload == nil || harness.Spec.Substrate == nil {
+		return v2translator.NewValidationError("kagent compiler requires workload and substrate")
+	}
+	return nil
 }
 
 func (c *Compiler) compileAgent(ctx context.Context, input *v2translator.AgentInput) (*compiledAgent, error) {

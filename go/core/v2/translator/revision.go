@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -30,6 +31,12 @@ type Revision struct {
 	Namespace         string
 	AgentTemplateName string
 	HarnessName       string
+	// BackendKind and ExternalRuntime select the immutable private runtime
+	// boundary. ExternalProfile is the sanitized runtime-neutral configuration
+	// dispatched to a connected external runtime.
+	BackendKind     dbpkg.RuntimeBackendKind
+	ExternalRuntime dbpkg.ExternalRuntime
+	ExternalProfile json.RawMessage
 
 	// Image and Environment describe the runtime container.
 	Image       string
@@ -57,6 +64,9 @@ func (r *Revision) Digest() (RevisionID, error) {
 		Namespace          string          `json:"namespace"`
 		AgentTemplateName  string          `json:"agentTemplateName"`
 		HarnessName        string          `json:"harnessName"`
+		BackendKind        string          `json:"backendKind"`
+		ExternalRuntime    string          `json:"externalRuntime,omitempty"`
+		ExternalProfile    json.RawMessage `json:"externalProfile,omitempty"`
 		Image              string          `json:"image"`
 		Environment        []corev1.EnvVar `json:"environment"`
 		ConfigJSON         json.RawMessage `json:"config"`
@@ -67,6 +77,7 @@ func (r *Revision) Digest() (RevisionID, error) {
 		EgressDestinations []string        `json:"egressDestinations"`
 	}{
 		Namespace: r.Namespace, AgentTemplateName: r.AgentTemplateName, HarnessName: r.HarnessName,
+		BackendKind: string(r.BackendKind), ExternalRuntime: string(r.ExternalRuntime), ExternalProfile: r.ExternalProfile,
 		Image: r.Image, Environment: r.Environment, ConfigJSON: r.ConfigJSON, AgentCardJSON: r.AgentCardJSON,
 		WorkerPoolName: r.WorkerPoolName, SnapshotLocation: r.SnapshotLocation, Provenance: r.Provenance,
 		EgressDestinations: r.EgressDestinations,

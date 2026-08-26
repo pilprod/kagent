@@ -182,6 +182,88 @@ Check if leader election should be enabled (more than 1 replica)
 {{- end -}}
 
 {{/*
+Validate the external runtime gateway configuration. The broker owns sessions
+in memory, so both the steady-state replica count and rollout strategy must
+prevent two controller pods from accepting the same device token.
+*/}}
+{{- define "kagent.controller.externalGateway.validate" -}}
+{{- $externalGateway := .Values.controller.externalGateway | default dict -}}
+{{- range $entry := .Values.controller.env | default list -}}
+  {{- $name := get $entry "name" | default "" -}}
+  {{- if hasPrefix "EXTERNAL_GATEWAY_" $name -}}
+    {{- fail (printf "controller.env[%s] is reserved; configure the external gateway through controller.externalGateway" $name) -}}
+  {{- end -}}
+{{- end -}}
+{{- if (get $externalGateway "enabled") -}}
+  {{- if ne (.Values.controller.replicas | int) 1 -}}
+    {{- fail "controller.externalGateway requires controller.replicas=1 because gateway sessions are process-local" -}}
+  {{- end -}}
+  {{- $gatewayPort := include "kagent.controller.externalGateway.port" . -}}
+  {{- $grpcBindPort := regexFind "[0-9]+$" (.Values.controller.grpc.bindAddress | toString) -}}
+  {{- if eq $grpcBindPort $gatewayPort -}}
+    {{- fail (printf "controller.grpc.bindAddress must not use external gateway port %s" $gatewayPort) -}}
+  {{- end -}}
+  {{- if eq (.Values.controller.service.ports.grpc | toString) $gatewayPort -}}
+    {{- fail (printf "controller.service.ports.grpc must not use external gateway port %s" $gatewayPort) -}}
+  {{- end -}}
+  {{- if eq (.Values.controller.service.ports.targetPort | toString) $gatewayPort -}}
+    {{- fail (printf "controller.service.ports.targetPort must not use external gateway port %s" $gatewayPort) -}}
+  {{- end -}}
+  {{- if and (include "kagent.controller.metricsEnabled" .) (eq (include "kagent.controller.metricsPort" .) $gatewayPort) -}}
+    {{- fail (printf "controller.metrics.bindAddress must not use external gateway port %s" $gatewayPort) -}}
+  {{- end -}}
+  {{- $dnsLabelPattern := "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" -}}
+  {{- $deviceID := get $externalGateway "deviceId" | default "" -}}
+  {{- if or (not $deviceID) (gt (len $deviceID) 63) (not (regexMatch $dnsLabelPattern $deviceID)) -}}
+    {{- fail "controller.externalGateway.deviceId must be a lowercase DNS label with at most 63 characters" -}}
+  {{- end -}}
+  {{- $codexSlotID := get $externalGateway "codexSlotId" | default "" -}}
+  {{- $claudeSlotID := get $externalGateway "claudeSlotId" | default "" -}}
+  {{- if and (not $codexSlotID) (not $claudeSlotID) -}}
+    {{- fail "controller.externalGateway requires at least one of codexSlotId or claudeSlotId" -}}
+  {{- end -}}
+  {{- if and $codexSlotID (or (gt (len $codexSlotID) 63) (not (regexMatch $dnsLabelPattern $codexSlotID))) -}}
+    {{- fail "controller.externalGateway.codexSlotId must be a lowercase DNS label with at most 63 characters" -}}
+  {{- end -}}
+  {{- if and $claudeSlotID (or (gt (len $claudeSlotID) 63) (not (regexMatch $dnsLabelPattern $claudeSlotID))) -}}
+    {{- fail "controller.externalGateway.claudeSlotId must be a lowercase DNS label with at most 63 characters" -}}
+  {{- end -}}
+  {{- $existingSecret := get $externalGateway "existingSecret" | default dict -}}
+  {{- $secretName := get $existingSecret "name" | default "" -}}
+  {{- if not $secretName -}}
+    {{- fail "controller.externalGateway.existingSecret.name is required" -}}
+  {{- end -}}
+  {{- $dnsSubdomainPattern := "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" -}}
+  {{- if or (gt (len $secretName) 253) (not (regexMatch $dnsSubdomainPattern $secretName)) -}}
+    {{- fail "controller.externalGateway.existingSecret.name must be a valid DNS subdomain with labels of at most 63 characters" -}}
+  {{- end -}}
+  {{- if not (get $existingSecret "key") -}}
+    {{- fail "controller.externalGateway.existingSecret.key is required" -}}
+  {{- end -}}
+  {{- range $volume := .Values.controller.volumes | default list -}}
+    {{- if eq (get $volume "name" | default "") "external-gateway-token" -}}
+      {{- fail "controller.volumes[external-gateway-token] is reserved while controller.externalGateway is enabled" -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $reservedMountPath := include "kagent.controller.externalGateway.tokenMountPath" $ -}}
+  {{- range $volumeMount := .Values.controller.volumeMounts | default list -}}
+    {{- $mountPath := trimSuffix "/" (get $volumeMount "mountPath" | default "") -}}
+    {{- $overlapsReservedPath := and $mountPath (or
+          (eq $mountPath $reservedMountPath)
+          (hasPrefix (printf "%s/" $mountPath) $reservedMountPath)
+          (hasPrefix (printf "%s/" $reservedMountPath) $mountPath)) -}}
+    {{- if or (eq (get $volumeMount "name" | default "") "external-gateway-token") $overlapsReservedPath -}}
+      {{- fail "the external gateway token volume and mount path are reserved while controller.externalGateway is enabled" -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "kagent.controller.externalGateway.port" -}}8085{{- end -}}
+{{- define "kagent.controller.externalGateway.tokenMountPath" -}}/var/run/secrets/kagent/external-gateway{{- end -}}
+{{- define "kagent.controller.externalGateway.tokenFile" -}}{{ include "kagent.controller.externalGateway.tokenMountPath" . }}/token{{- end -}}
+
+{{/*
 Extract the TCP port from controller.metrics.bindAddress.
 
 Anchors the digit run to the end of the string so every Go-style

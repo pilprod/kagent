@@ -81,9 +81,18 @@ func testHarness(namespace, name, workerPool string) *v1alpha3.Harness {
 	return &v1alpha3.Harness{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 		Spec: v1alpha3.HarnessSpec{
-			Codex:    &v1alpha3.CodexHarness{},
-			Workload: v1alpha3.HarnessWorkload{Image: testHarnessImage},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
+			Codex: &v1alpha3.CodexHarness{},
+		},
+	}
+}
+
+func testKagentHarness(namespace, name, workerPool string) *v1alpha3.Harness {
+	return &v1alpha3.Harness{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Spec: v1alpha3.HarnessSpec{
+			Kagent:   &v1alpha3.KagentHarness{},
+			Workload: &v1alpha3.HarnessWorkload{Image: testHarnessImage},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
 				WorkerPoolRef:  corev1.LocalObjectReference{Name: workerPool},
 				SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "s3://snapshots"},
 			},
@@ -218,13 +227,13 @@ func TestHarnessServiceGeneratedClient(t *testing.T) {
 
 	created, err := client.CreateHarness(ctx, &apiv1alpha1.CreateHarnessRequest{
 		Ref:      ref,
-		Resource: structured(t, testHarness("team", "a-created", "pool-a"), harnessKind),
+		Resource: structured(t, testKagentHarness("team", "a-created", "pool-a"), harnessKind),
 	})
 	if err != nil {
 		t.Fatalf("CreateHarness() error = %v", err)
 	}
-	if got := created.GetHarness(); got.GetRuntime() != harnessRuntimeCodex || got.GetWorkloadImage() != testHarnessImage {
-		t.Fatalf("CreateHarness() = %+v, want codex runtime and pinned image", got)
+	if got := created.GetHarness(); got.GetRuntime() != harnessRuntimeKagent || got.GetWorkloadImage() != testHarnessImage {
+		t.Fatalf("CreateHarness() = %+v, want kagent runtime and pinned image", got)
 	}
 	if created.GetHarness().GetReady() {
 		t.Fatal("CreateHarness() ready = true, want false before the controller observes it")
@@ -232,7 +241,7 @@ func TestHarnessServiceGeneratedClient(t *testing.T) {
 
 	_, err = client.CreateHarness(ctx, &apiv1alpha1.CreateHarnessRequest{
 		Ref:      ref,
-		Resource: structured(t, testHarness("team", "a-created", "pool-a"), harnessKind),
+		Resource: structured(t, testKagentHarness("team", "a-created", "pool-a"), harnessKind),
 	})
 	assertCode(t, err, codes.AlreadyExists)
 
@@ -242,6 +251,9 @@ func TestHarnessServiceGeneratedClient(t *testing.T) {
 	}
 	if len(listed.GetHarnesses()) != 2 {
 		t.Fatalf("ListHarnesses() count = %d, want 2", len(listed.GetHarnesses()))
+	}
+	if got := listed.GetHarnesses()[1]; got.GetRuntime() != harnessRuntimeCodex || got.GetWorkloadImage() != "" {
+		t.Fatalf("ListHarnesses()[1] = %+v, want external runtime without workload image", got)
 	}
 	if !listed.GetHarnesses()[1].GetReady() {
 		t.Fatal("ListHarnesses()[1].ready = false, want the Ready condition reflected")

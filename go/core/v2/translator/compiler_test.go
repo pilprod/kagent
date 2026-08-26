@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kagent-dev/kagent/go/api/adk"
+	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	"github.com/kagent-dev/kagent/go/api/v1alpha3"
 	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
 	kagenttranslator "github.com/kagent-dev/kagent/go/core/v2/translator/kagent"
@@ -34,8 +35,8 @@ func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 		Spec: v1alpha3.HarnessSpec{
 			Kagent:                &v1alpha3.KagentHarness{},
 			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
-			Workload:              v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
+			Workload:              &v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
 				WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 			},
 		},
@@ -69,6 +70,7 @@ func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	require.Equal(t, dbpkg.RuntimeBackendKindSubstrate, spec.BackendKind)
 	var config adk.AgentConfig
 	if err := json.Unmarshal(spec.ConfigJSON, &config); err != nil {
 		t.Fatal(err)
@@ -122,7 +124,7 @@ func (c *testHarnessCompiler) Compile(_ context.Context, input *v2translator.Har
 
 func TestCompilerAcceptsExternalHarnessCompiler(t *testing.T) {
 	require.NoError(t, v1alpha3.AddToScheme(schemev1.Scheme))
-	kube := fake.NewClientBuilder().WithScheme(schemev1.Scheme).WithObjects(modelConfig()).Build()
+	kube := fake.NewClientBuilder().WithScheme(schemev1.Scheme).Build()
 	adapter := &testHarnessCompiler{}
 	harness := &v1alpha3.Harness{
 		ObjectMeta: metav1.ObjectMeta{Name: "codex", Namespace: "test"},
@@ -136,6 +138,7 @@ func TestCompilerAcceptsExternalHarnessCompiler(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "assistant", revision.AgentTemplateName)
 	require.Equal(t, template.Name, adapter.input.Root.Template.Name)
+	require.Nil(t, adapter.input.Root.ModelConfig)
 }
 
 func TestCompileAgentTemplateResolvesCredentialsForSubstrate(t *testing.T) {
@@ -166,8 +169,8 @@ func TestCompileAgentTemplateResolvesCredentialsForSubstrate(t *testing.T) {
 		Spec: v1alpha3.HarnessSpec{
 			Kagent:                &v1alpha3.KagentHarness{},
 			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
-			Workload:              v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
+			Workload:              &v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
 				WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
 				SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 			},
@@ -222,8 +225,8 @@ func TestCompileAgentTemplateSharedAgent(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "kagent", Namespace: "test"},
 		Spec: v1alpha3.HarnessSpec{
 			Kagent: &v1alpha3.KagentHarness{}, AllowedAgentTemplates: selector,
-			Workload:  v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
+			Workload:  &v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
 		},
 	}
 	child := &v1alpha3.AgentTemplate{

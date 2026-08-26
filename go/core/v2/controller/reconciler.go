@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
@@ -13,6 +14,7 @@ import (
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"github.com/kagent-dev/kagent/go/core/v2/substrate"
 	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
+	externaltranslator "github.com/kagent-dev/kagent/go/core/v2/translator/external"
 	kagenttranslator "github.com/kagent-dev/kagent/go/core/v2/translator/kagent"
 	"istio.io/istio/pkg/kube/controllers"
 	"istio.io/istio/pkg/kube/krt"
@@ -46,6 +48,19 @@ type ReconciliationFailure struct {
 	Message   string
 }
 
+var (
+	codexHarnessCompiler  = mustExternalHarnessCompiler(dbpkg.ExternalRuntimeCodex)
+	claudeHarnessCompiler = mustExternalHarnessCompiler(dbpkg.ExternalRuntimeClaude)
+)
+
+func mustExternalHarnessCompiler(runtime dbpkg.ExternalRuntime) v2translator.HarnessCompiler {
+	compiler, err := externaltranslator.NewCompiler(runtime)
+	if err != nil {
+		panic(err)
+	}
+	return compiler
+}
+
 func newPairReconciliations(
 	pairs krt.Collection[AgentTemplateHarnessPair],
 	agentTemplates krt.Collection[*kagentv1alpha3.AgentTemplate],
@@ -65,6 +80,8 @@ func newPairReconciliations(
 		}
 		revision, err := v2translator.NewCompiler(reader, map[v2translator.HarnessType]v2translator.HarnessCompiler{
 			v2translator.HarnessTypeKagent: kagenttranslator.NewCompiler(reader),
+			v2translator.HarnessTypeCodex:  codexHarnessCompiler,
+			v2translator.HarnessTypeClaude: claudeHarnessCompiler,
 		}).CompileAgentTemplate(context.Background(), pair.Harness, pair.AgentTemplate)
 		if err != nil {
 			condition, reason := kagentv1alpha3.AgentTemplateConditionResolvedRefs, "ReferenceResolutionFailed"
@@ -79,6 +96,19 @@ func newPairReconciliations(
 		state.RevisionID, err = revision.Digest()
 		if err != nil {
 			state.Failure = &ReconciliationFailure{Condition: kagentv1alpha3.AgentTemplateConditionCompatible, Reason: "RevisionInvalid", Message: err.Error()}
+			return state
+		}
+		switch revision.BackendKind {
+		case dbpkg.RuntimeBackendKindExternal:
+			return state
+		case dbpkg.RuntimeBackendKindSubstrate:
+			// Continue into the Substrate materialization path below.
+		default:
+			state.Failure = &ReconciliationFailure{
+				Condition: kagentv1alpha3.AgentTemplateConditionCompatible,
+				Reason:    "RuntimeBackendUnsupported",
+				Message:   "compiled revision selected an unsupported runtime backend",
+			}
 			return state
 		}
 
@@ -237,6 +267,29 @@ func (r *Reconciler) reconcilePair(ctx context.Context, key string) error {
 	if state.Failure != nil {
 		return r.cleanupUnreferencedRevisions(ctx)
 	}
+	if state.Revision.BackendKind == dbpkg.RuntimeBackendKindExternal {
+		revision := dbpkg.RuntimeRevision{
+			Revision: state.RevisionID.String(), Namespace: pair.Namespace, AgentTemplateName: pair.AgentTemplateName,
+			AgentTemplateUID: pair.AgentTemplateUID, HarnessName: pair.HarnessName, HarnessUID: pair.HarnessUID,
+			SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON,
+			BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: state.Revision.ExternalRuntime,
+			ExternalProfile: state.Revision.ExternalProfile, EgressDestinations: state.Revision.EgressDestinations,
+			Phase: "Ready",
+		}
+		if err := r.store.UpsertRuntimeRevision(ctx, revision); err != nil {
+			return fmt.Errorf("store external runtime revision %s: %w", state.RevisionID, err)
+		}
+		if err := r.store.MarkRuntimeRevisionSuccessful(ctx, pair); err != nil {
+			return fmt.Errorf("mark external runtime revision %s successful: %w", state.RevisionID, err)
+		}
+		if err := r.promotePairStatus(ctx, state); err != nil {
+			return err
+		}
+		return r.cleanupUnreferencedRevisions(ctx)
+	}
+	if state.Revision.BackendKind != dbpkg.RuntimeBackendKindSubstrate {
+		return fmt.Errorf("runtime revision %s selected an unsupported backend", state.RevisionID)
+	}
 	if state.ObservedActorTemplate == nil {
 		_, err := r.actors.ActorTemplates(state.DesiredActorTemplate.Namespace).Create(ctx, state.DesiredActorTemplate.DeepCopy(), metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -262,7 +315,63 @@ func (r *Reconciler) reconcilePair(ctx context.Context, key string) error {
 		if err := r.store.MarkRuntimeRevisionSuccessful(ctx, pair); err != nil {
 			return fmt.Errorf("mark runtime revision %s successful: %w", state.RevisionID, err)
 		}
+		if err := r.promotePairStatus(ctx, state); err != nil {
+			return err
+		}
 		return r.cleanupUnreferencedRevisions(ctx)
+	}
+	return nil
+}
+
+// promotePairStatus publishes a revision only after the database has accepted
+// both the immutable revision and the latest-successful edge. Source identity
+// guards reject superseded work, while reconcileStatus rejects derived values
+// from an older resourceVersion so Pending cannot overwrite this acknowledgement.
+func (r *Reconciler) promotePairStatus(ctx context.Context, state *PairReconciliation) error {
+	key := state.Pair.AgentTemplate.Namespace + "/" + state.Pair.AgentTemplate.Name
+	template := r.collections.AgentTemplates.GetKey(key)
+	if template == nil {
+		return fmt.Errorf("promote runtime revision %s status: AgentTemplate %s is no longer available", state.RevisionID, key)
+	}
+	// Persistence can finish after either source object has been replaced or
+	// after a newer generation/revision has entered the graph. The database
+	// write is identity-scoped, but status is name-scoped, so never publish the
+	// old acknowledgement onto the new object.
+	if (*template).UID != state.Pair.AgentTemplate.UID || (*template).Generation != state.Pair.AgentTemplate.Generation {
+		return nil
+	}
+	currentState := r.collections.Reconciliations.GetKey(state.ResourceName())
+	if currentState == nil ||
+		currentState.Pair.AgentTemplate.UID != state.Pair.AgentTemplate.UID ||
+		currentState.Pair.AgentTemplate.Generation != state.Pair.AgentTemplate.Generation ||
+		currentState.Pair.Harness.UID != state.Pair.Harness.UID ||
+		currentState.RevisionID != state.RevisionID {
+		return nil
+	}
+	updated := (*template).DeepCopy()
+	current := (*template).Status
+	promoted := statusForPair(*currentState, updated.Generation, state.RevisionID.String())
+	replaced := false
+	for index := range updated.Status.Harnesses {
+		if updated.Status.Harnesses[index].Harness == promoted.Harness {
+			updated.Status.Harnesses[index] = promoted
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		updated.Status.Harnesses = append(updated.Status.Harnesses, promoted)
+		slices.SortFunc(updated.Status.Harnesses, func(left, right kagentv1alpha3.AgentTemplateHarnessStatus) int {
+			return strings.Compare(left.Harness, right.Harness)
+		})
+	}
+	updated.Status.ObservedGeneration = updated.Generation
+	updated.Status = statusWithTransitionTimes(updated.Status, current)
+	if apiequality.Semantic.DeepEqual(updated.Status, (*template).Status) {
+		return nil
+	}
+	if err := r.updateStatus(ctx, updated); err != nil {
+		return fmt.Errorf("promote runtime revision %s status: %w", state.RevisionID, err)
 	}
 	return nil
 }
@@ -271,6 +380,17 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, key string) error {
 	desired := r.collections.AgentTemplateStatuses.GetKey(key)
 	template := r.collections.AgentTemplates.GetKey(key)
 	if desired == nil || template == nil {
+		return nil
+	}
+	// A StatusCollection value includes the exact source object from which its
+	// status was derived. Do not transplant an older derived Pending status onto
+	// a newer resourceVersion after promotePairStatus has acknowledged Ready.
+	// The informer event for the newer object will either enqueue the current
+	// derived value or observe that the promoted status is already identical.
+	if desired.Obj == nil ||
+		desired.Obj.UID != (*template).UID ||
+		desired.Obj.Generation != (*template).Generation ||
+		desired.Obj.ResourceVersion != (*template).ResourceVersion {
 		return nil
 	}
 	updated := (*template).DeepCopy()
@@ -292,6 +412,17 @@ func (r *Reconciler) cleanupUnreferencedRevisions(ctx context.Context) error {
 		return fmt.Errorf("list unreferenced runtime revisions: %w", err)
 	}
 	for _, revision := range revisions {
+		switch revision.BackendKind {
+		case dbpkg.RuntimeBackendKindExternal:
+			if err := r.store.DeleteUnreferencedRuntimeRevision(ctx, revision.Revision); err != nil {
+				return fmt.Errorf("delete unreferenced external runtime revision %s: %w", revision.Revision, err)
+			}
+			continue
+		case dbpkg.RuntimeBackendKindSubstrate:
+			// Continue with the UID-guarded Kubernetes cleanup below.
+		default:
+			return fmt.Errorf("unreferenced runtime revision %s has an unsupported backend", revision.Revision)
+		}
 		client := r.actors.ActorTemplates(revision.ActorTemplateNamespace)
 		template, err := client.Get(ctx, revision.ActorTemplateName, metav1.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {

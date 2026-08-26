@@ -32,6 +32,11 @@ type postgresClient struct {
 	db *pgxpool.Pool
 }
 
+// externalActorTemplateNamespace is a database-only compatibility sentinel.
+// Version 18 readers require non-null actor identity columns, while external
+// revisions never select or address a Kubernetes ActorTemplate.
+const externalActorTemplateNamespace = "_external"
+
 func NewClient(db *pgxpool.Pool) dbpkg.Client {
 	return &postgresClient{
 		q:  dbgen.New(db),
@@ -373,15 +378,26 @@ func (c *postgresClient) UpsertRuntimeRevision(ctx context.Context, revision dbp
 	if err := revision.ValidateBackendIdentity(); err != nil {
 		return &runtimeRevisionPersistenceError{operation: "validate backend identity", cause: err}
 	}
+	egressDestinations := revision.EgressDestinations
+	if egressDestinations == nil {
+		egressDestinations = []string{}
+	}
+	actorTemplateNamespace := revision.ActorTemplateNamespace
+	actorTemplateName := revision.ActorTemplateName
+	if revision.BackendKind == dbpkg.RuntimeBackendKindExternal {
+		actorTemplateNamespace = externalActorTemplateNamespace
+		actorTemplateName = revision.Revision
+	}
 	rowsAffected, err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
 		Revision: revision.Revision, Namespace: revision.Namespace,
 		AgentTemplateName: revision.AgentTemplateName, AgentTemplateUid: revision.AgentTemplateUID,
 		HarnessName: revision.HarnessName, HarnessUid: revision.HarnessUID,
 		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard,
-		EgressDestinations:     revision.EgressDestinations,
+		EgressDestinations:     egressDestinations,
 		BackendKind:            string(revision.BackendKind),
 		ExternalRuntime:        externalRuntimeDBValue(revision.ExternalRuntime),
-		ActorTemplateNamespace: revision.ActorTemplateNamespace, ActorTemplateName: revision.ActorTemplateName,
+		ExternalProfile:        revision.ExternalProfile,
+		ActorTemplateNamespace: actorTemplateNamespace, ActorTemplateName: actorTemplateName,
 		ActorTemplateUid: revision.ActorTemplateUID, Phase: revision.Phase, GoldenSnapshot: revision.GoldenSnapshot,
 	})
 	if err != nil {
@@ -407,10 +423,17 @@ func (c *postgresClient) GetRuntimeRevision(ctx context.Context, revision string
 
 func (c *postgresClient) MarkRuntimeRevisionSuccessful(ctx context.Context, pair dbpkg.AgentTemplateHarnessPair) error {
 	revision := pair.DesiredRevision
-	return c.q.MarkRuntimeRevisionSuccessful(ctx, dbgen.MarkRuntimeRevisionSuccessfulParams{
+	rowsAffected, err := c.q.MarkRuntimeRevisionSuccessful(ctx, dbgen.MarkRuntimeRevisionSuccessfulParams{
 		Revision: &revision, Namespace: pair.Namespace,
 		AgentTemplateUid: pair.AgentTemplateUID, HarnessUid: pair.HarnessUID,
 	})
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return errors.New("runtime revision is no longer the active desired revision")
+	}
+	return nil
 }
 
 func (c *postgresClient) RetireAgentTemplateHarnessPairs(ctx context.Context, namespace, name string) error {
@@ -444,6 +467,16 @@ func (c *postgresClient) ListUnreferencedRuntimeRevisions(ctx context.Context) (
 }
 
 func runtimeRevisionFromRow(row dbgen.RuntimeRevision) (dbpkg.RuntimeRevision, error) {
+	actorTemplateNamespace := row.ActorTemplateNamespace
+	actorTemplateName := row.ActorTemplateName
+	if dbpkg.RuntimeBackendKind(row.BackendKind) == dbpkg.RuntimeBackendKindExternal {
+		if actorTemplateNamespace != externalActorTemplateNamespace || actorTemplateName != row.Revision {
+			return dbpkg.RuntimeRevision{}, &runtimeRevisionPersistenceError{
+				operation: "decode backend identity", cause: errors.New("external runtime revision has an invalid compatibility sentinel"),
+			}
+		}
+		actorTemplateNamespace, actorTemplateName = "", ""
+	}
 	revision := dbpkg.RuntimeRevision{
 		Revision: row.Revision, Namespace: row.Namespace,
 		AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
@@ -452,7 +485,8 @@ func runtimeRevisionFromRow(row dbgen.RuntimeRevision) (dbpkg.RuntimeRevision, e
 		EgressDestinations:     row.EgressDestinations,
 		BackendKind:            dbpkg.RuntimeBackendKind(row.BackendKind),
 		ExternalRuntime:        externalRuntimeFromDB(row.ExternalRuntime),
-		ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
+		ExternalProfile:        row.ExternalProfile,
+		ActorTemplateNamespace: actorTemplateNamespace, ActorTemplateName: actorTemplateName,
 		ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
 	}
 	if err := revision.ValidateBackendIdentity(); err != nil {

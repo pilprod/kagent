@@ -357,6 +357,8 @@ func externalRevision(runtime dbpkg.ExternalRuntime) *dbpkg.RuntimeRevision {
 		Revision:        lifecycleRevisionID,
 		BackendKind:     dbpkg.RuntimeBackendKindExternal,
 		ExternalRuntime: runtime,
+		ExternalProfile: []byte(`{"version":"v1","instruction":"","tools":[]}`),
+		Phase:           "Ready",
 	}
 }
 

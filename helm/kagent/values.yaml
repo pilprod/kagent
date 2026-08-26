@@ -177,6 +177,9 @@ controller:
     # Useful for GCP Workload Identity, AWS IRSA, or Azure Workload Identity.
     # @default -- {} (no extra annotations)
     annotations: {}
+  # -- Number of controller replicas. Must remain `1` while
+  # `controller.externalGateway.enabled` is true because external runtime
+  # sessions are currently held in controller memory.
   replicas: 1
   loglevel: "info"
   # Authentication mode: "unsecure" (default) or "trusted-proxy"
@@ -321,7 +324,33 @@ controller:
     tlsCertFile: ""
     tlsKeyFile: ""
 
+  # -- Reverse HTTP gateway for locally running Codex and Claude Code agents.
+  # Disabled by default. When enabled, the chart creates a dedicated ClusterIP
+  # Service on port 8085 and mounts a token from an existing Kubernetes Secret.
+  # The chart never creates or accepts the token as an inline Helm value.
+  externalGateway:
+    # -- Enable the external runtime gateway. Requires exactly one controller
+    # replica and at least one of `codexSlotId` or `claudeSlotId`.
+    enabled: false
+    # -- Stable external device identity. Use a lowercase DNS label (max 63
+    # characters). Both runtime slots, when configured, belong to this device.
+    deviceId: ""
+    # -- Stable Codex runtime slot identity, or empty to disable Codex for this
+    # device. Must be a lowercase DNS label when set.
+    codexSlotId: ""
+    # -- Stable Claude Code runtime slot identity, or empty to disable Claude
+    # Code for this device. Must be a lowercase DNS label when set.
+    claudeSlotId: ""
+    existingSecret:
+      # -- Name of an existing Secret in the kagent release namespace. The
+      # Secret is mounted read-only; it is never copied into a rendered value.
+      name: ""
+      # -- Secret data key containing the external device bearer token.
+      key: token
+
   # Extra controller env (mapped to flags via SUBSTRATE_* env names).
+  # EXTERNAL_GATEWAY_* names are reserved; configure them through
+  # controller.externalGateway so the chart can enforce its security invariants.
   env: []
 
   # Agent Substrate (OpenClaw harness runtime=substrate). Requires ate-system installed.

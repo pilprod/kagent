@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"time"
@@ -287,6 +288,7 @@ type RuntimeRevision struct {
 	EgressDestinations     []string
 	BackendKind            RuntimeBackendKind
 	ExternalRuntime        ExternalRuntime
+	ExternalProfile        json.RawMessage
 	ActorTemplateNamespace string
 	ActorTemplateName      string
 	ActorTemplateUID       string
@@ -299,12 +301,25 @@ type RuntimeRevision struct {
 func (r RuntimeRevision) ValidateBackendIdentity() error {
 	switch r.BackendKind {
 	case RuntimeBackendKindSubstrate:
-		if r.ExternalRuntime != "" {
-			return errors.New("substrate runtime revision must not select an external runtime")
+		if r.ExternalRuntime != "" || len(bytes.TrimSpace(r.ExternalProfile)) != 0 {
+			return errors.New("substrate runtime revision must not select an external runtime or profile")
+		}
+		if r.ActorTemplateNamespace == "" || r.ActorTemplateName == "" {
+			return errors.New("substrate runtime revision requires an actor template identity")
 		}
 	case RuntimeBackendKindExternal:
 		if r.ExternalRuntime != ExternalRuntimeCodex && r.ExternalRuntime != ExternalRuntimeClaude {
 			return errors.New("external runtime revision must select a supported runtime")
+		}
+		profile := bytes.TrimSpace(r.ExternalProfile)
+		if len(profile) == 0 || profile[0] != '{' || !json.Valid(profile) {
+			return errors.New("external runtime revision requires a JSON object profile")
+		}
+		if r.ActorTemplateNamespace != "" || r.ActorTemplateName != "" || r.ActorTemplateUID != "" {
+			return errors.New("external runtime revision must not select an actor template")
+		}
+		if r.Phase != "Ready" || r.GoldenSnapshot != "" {
+			return errors.New("external runtime revision must be ready without a golden snapshot")
 		}
 	default:
 		return errors.New("runtime revision backend kind is invalid")

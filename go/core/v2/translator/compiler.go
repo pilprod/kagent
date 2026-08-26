@@ -189,12 +189,16 @@ func harnessSelector(harness *v1alpha3.Harness) (labels.Selector, error) {
 }
 
 func (c *Compiler) buildInputs(ctx context.Context, tree *ResolvedTree) (*HarnessInput, error) {
+	resolveModel := harnessType(tree.Harness) == HarnessTypeKagent
 	var build func(*ResolvedAgent) (*AgentInput, error)
 	build = func(agent *ResolvedAgent) (*AgentInput, error) {
 		template := agent.Template
-		model := &v1alpha3.ModelConfig{}
-		if err := c.kube.Get(ctx, types.NamespacedName{Namespace: template.Namespace, Name: template.Spec.ModelConfig.Name}, model); err != nil {
-			return nil, fmt.Errorf("resolve ModelConfig %q: %w", template.Spec.ModelConfig.Name, err)
+		var model *v1alpha3.ModelConfig
+		if resolveModel {
+			model = &v1alpha3.ModelConfig{}
+			if err := c.kube.Get(ctx, types.NamespacedName{Namespace: template.Namespace, Name: template.Spec.ModelConfig.Name}, model); err != nil {
+				return nil, fmt.Errorf("resolve ModelConfig %q: %w", template.Spec.ModelConfig.Name, err)
+			}
 		}
 		instruction, err := c.resolveAgentTemplatePrompt(ctx, template)
 		if err != nil {

@@ -56,8 +56,8 @@ func TestReconciliationCollectionsCompileAndObserveRevision(t *testing.T) {
 	matchingHarness := harness("team-a", "kagent", map[string]string{"runtime": "python"})
 	matchingHarness.UID = "harness-uid"
 	matchingHarness.Spec.Kagent = &kagentv1alpha3.KagentHarness{}
-	matchingHarness.Spec.Workload.Image = "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	matchingHarness.Spec.Substrate = kagentv1alpha3.HarnessSubstratePolicy{
+	matchingHarness.Spec.Workload = &kagentv1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	matchingHarness.Spec.Substrate = &kagentv1alpha3.HarnessSubstratePolicy{
 		WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
 		SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 	}
@@ -109,7 +109,7 @@ func TestReconciliationCollectionsCompileAndObserveRevision(t *testing.T) {
 			return false
 		}
 		ready := apimeta.FindStatusCondition(updates[0].Status.Harnesses[0].Conditions, kagentv1alpha3.AgentTemplateConditionReady)
-		return ready != nil && ready.Status == metav1.ConditionTrue && updates[0].Status.Harnesses[0].LatestSuccessfulRevision == state.RevisionID.String()
+		return ready != nil && ready.Status == metav1.ConditionFalse && ready.Reason == "RevisionPending" && updates[0].Status.Harnesses[0].LatestSuccessfulRevision == ""
 	})
 
 	modelConfigs.UpdateObject(&kagentv1alpha3.ModelConfig{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "model"}, Spec: kagentv1alpha3.ModelConfigSpec{Provider: kagentv1alpha3.ModelProviderOpenAI, Model: "gpt-5.1"}})
@@ -138,8 +138,8 @@ func TestReconciliationTracksSharedAgentTemplate(t *testing.T) {
 	}
 	harness := harness("team-a", "kagent", map[string]string{"runtime": "python"})
 	harness.Spec.Kagent = &kagentv1alpha3.KagentHarness{}
-	harness.Spec.Workload.Image = "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	harness.Spec.Substrate = kagentv1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}}
+	harness.Spec.Workload = &kagentv1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	harness.Spec.Substrate = &kagentv1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}}
 	templates := krt.NewStaticCollection(nil, []*kagentv1alpha3.AgentTemplate{root, child}, opts.WithName("AgentTemplates")...)
 	pairs := newPairCollection(templates, krt.NewStaticCollection(nil, []*kagentv1alpha3.Harness{harness}, opts.WithName("Harnesses")...), opts)
 	reconciliations := newPairReconciliations(

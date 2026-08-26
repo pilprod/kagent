@@ -1,0 +1,340 @@
+suite: test external runtime gateway
+templates:
+  - controller-deployment.yaml
+  - controller-service.yaml
+  - controller-external-gateway-service.yaml
+  - controller-configmap.yaml
+  - postgresql-secret.yaml
+tests:
+  - it: should keep the gateway disabled by default
+    template: controller-deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.strategy
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_ENABLED
+            value: "false"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_TOKEN_FILE
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: ext-gateway
+      - notExists:
+          path: spec.template.spec.volumes
+
+  - it: should not create the gateway service by default
+    template: controller-external-gateway-service.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should configure a Codex gateway from an existing Secret
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: bearer
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_BIND_ADDRESS
+            value: ":8085"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_TOKEN_FILE
+            value: /var/run/secrets/kagent/external-gateway/token
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_DEVICE_ID
+            value: workstation-1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_CODEX_SLOT_ID
+            value: codex-1
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_CLAUDE_SLOT_ID
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: ext-gateway
+            containerPort: 8085
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: external-gateway-token
+            secret:
+              secretName: external-device-token
+              defaultMode: 292
+              items:
+                - key: bearer
+                  path: token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: external-gateway-token
+            mountPath: /var/run/secrets/kagent/external-gateway
+            readOnly: true
+
+  - it: should configure a Claude-only gateway without a Codex placement
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          claudeSlotId: claude-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_CLAUDE_SLOT_ID
+            value: claude-1
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: EXTERNAL_GATEWAY_CODEX_SLOT_ID
+
+  - it: should configure both runtime slots and expose a dedicated internal service
+    template: controller-external-gateway-service.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          claudeSlotId: claude-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - contains:
+          path: spec.ports
+          content:
+            port: 8085
+            targetPort: ext-gateway
+            protocol: TCP
+            name: external-gateway
+
+  - it: should keep the gateway internal when the controller service is public
+    template: controller-external-gateway-service.yaml
+    set:
+      controller:
+        service:
+          type: LoadBalancer
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - equal:
+          path: spec.type
+          value: ClusterIP
+
+  - it: should reject multiple controller replicas
+    template: controller-deployment.yaml
+    set:
+      controller:
+        replicas: 2
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.externalGateway requires controller.replicas=1 because gateway sessions are process-local"
+
+  - it: should reject a colliding gRPC bind address
+    template: controller-deployment.yaml
+    set:
+      controller:
+        grpc:
+          bindAddress: ":8085"
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.grpc.bindAddress must not use external gateway port 8085"
+
+  - it: should reject a controller gRPC service port that exposes the gateway
+    template: controller-deployment.yaml
+    set:
+      controller:
+        service:
+          ports:
+            grpc: 8085
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.service.ports.grpc must not use external gateway port 8085"
+
+  - it: should reject a controller HTTP target port that exposes the gateway
+    template: controller-deployment.yaml
+    set:
+      controller:
+        service:
+          ports:
+            targetPort: 8085
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.service.ports.targetPort must not use external gateway port 8085"
+
+  - it: should reject a colliding metrics bind address
+    template: controller-deployment.yaml
+    set:
+      controller:
+        metrics:
+          enabled: true
+          bindAddress: ":8085"
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.metrics.bindAddress must not use external gateway port 8085"
+
+  - it: should require a configured runtime slot
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          existingSecret:
+            name: external-device-token
+            key: token
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.externalGateway requires at least one of codexSlotId or claudeSlotId"
+
+  - it: should require an existing Secret name
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.externalGateway.existingSecret.name is required"
+
+  - it: should reject direct gateway environment overrides
+    template: controller-deployment.yaml
+    set:
+      controller:
+        env:
+          - name: EXTERNAL_GATEWAY_ENABLED
+            value: "true"
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.env[EXTERNAL_GATEWAY_ENABLED] is reserved; configure the external gateway through controller.externalGateway"
+
+  - it: should reject a conflicting custom token volume
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+        volumes:
+          - name: external-gateway-token
+            emptyDir: {}
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.volumes[external-gateway-token] is reserved while controller.externalGateway is enabled"
+
+  - it: should reject a parent mount that shadows the token path
+    template: controller-deployment.yaml
+    set:
+      controller:
+        externalGateway:
+          enabled: true
+          deviceId: workstation-1
+          codexSlotId: codex-1
+          existingSecret:
+            name: external-device-token
+            key: token
+        volumeMounts:
+          - name: shadow
+            mountPath: /var/run/secrets/kagent
+    asserts:
+      - failedTemplate:
+          errorMessage: "the external gateway token volume and mount path are reserved while controller.externalGateway is enabled"

@@ -1422,7 +1422,11 @@ func (in *HarnessSpec) DeepCopyInto(out *HarnessSpec) {
 		*out = new(ClaudeHarness)
 		**out = **in
 	}
-	out.Workload = in.Workload
+	if in.Workload != nil {
+		in, out := &in.Workload, &out.Workload
+		*out = new(HarnessWorkload)
+		**out = **in
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]HarnessEnvVar, len(*in))
@@ -1430,7 +1434,11 @@ func (in *HarnessSpec) DeepCopyInto(out *HarnessSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	out.Substrate = in.Substrate
+	if in.Substrate != nil {
+		in, out := &in.Substrate, &out.Substrate
+		*out = new(HarnessSubstratePolicy)
+		**out = **in
+	}
 	if in.AllowedAgentTemplates != nil {
 		in, out := &in.AllowedAgentTemplates, &out.AllowedAgentTemplates
 		*out = new(HarnessAgentTemplateAdmission)

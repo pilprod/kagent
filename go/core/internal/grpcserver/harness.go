@@ -82,11 +82,15 @@ func (s *harnessServer) harness(object *v1alpha3.Harness) (*apiv1alpha1.Harness,
 	if err != nil {
 		return nil, serviceerrors.NewInternal("Failed to encode Harness resource", err)
 	}
+	workloadImage := ""
+	if object.Spec.Workload != nil {
+		workloadImage = object.Spec.Workload.Image
+	}
 	return &apiv1alpha1.Harness{
 		Ref:           &apiv1alpha1.ResourceReference{Namespace: object.Namespace, Name: object.Name},
 		Resource:      resource,
 		Runtime:       harnessRuntime(object),
-		WorkloadImage: object.Spec.Workload.Image,
+		WorkloadImage: workloadImage,
 		Ready:         meta.IsStatusConditionTrue(object.Status.Conditions, v1alpha3.HarnessConditionTypeReady),
 	}, nil
 }

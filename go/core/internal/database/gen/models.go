@@ -227,6 +227,7 @@ type RuntimeRevision struct {
 	AgentCard              []byte
 	BackendKind            string
 	ExternalRuntime        *string
+	ExternalProfile        []byte
 }
 
 type Session struct {

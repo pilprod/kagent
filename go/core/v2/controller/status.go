@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
+	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"istio.io/istio/pkg/kube/krt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,11 +58,22 @@ func statusForPair(state PairReconciliation, generation int64, latestSuccessful 
 	}
 	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionResolvedRefs, metav1.ConditionTrue, "Resolved", "All runtime references resolved")
 	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionCompatible, metav1.ConditionTrue, "Compatible", "Resolved configuration is compatible with the Harness")
+	if state.Revision != nil && state.Revision.BackendKind == dbpkg.RuntimeBackendKindExternal {
+		if latestSuccessful != desired {
+			setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionFalse, "ExternalRevisionPending", "waiting for the external runtime revision to be persisted")
+			return status
+		}
+		setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionTrue, "ExternalRuntimePrepared", "external runtime revision is prepared; online slot availability is checked when an AgentInstance is created or resumed")
+		return status
+	}
 	if state.ObservedActorTemplate == nil || state.ObservedActorTemplate.Status.Phase != atev1alpha1.PhaseReady {
 		setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionFalse, "ActorTemplatePending", "waiting for the ActorTemplate golden snapshot")
 		return status
 	}
-	status.LatestSuccessfulRevision = state.RevisionID.String()
+	if latestSuccessful != desired {
+		setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionFalse, "RevisionPending", "waiting for the ready runtime revision to be persisted")
+		return status
+	}
 	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionTrue, "Ready", "ActorTemplate golden snapshot is ready")
 	return status
 }

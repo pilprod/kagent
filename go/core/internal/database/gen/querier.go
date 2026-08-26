@@ -124,7 +124,7 @@ type Querier interface {
 	LockAgentInstance(ctx context.Context, id string) (AgentInstance, error)
 	LockReadyAgentInstanceCheckpoint(ctx context.Context, arg LockReadyAgentInstanceCheckpointParams) (AgentInstanceCheckpoint, error)
 	MarkAgentInstanceReady(ctx context.Context, arg MarkAgentInstanceReadyParams) (AgentInstance, error)
-	MarkRuntimeRevisionSuccessful(ctx context.Context, arg MarkRuntimeRevisionSuccessfulParams) error
+	MarkRuntimeRevisionSuccessful(ctx context.Context, arg MarkRuntimeRevisionSuccessfulParams) (int64, error)
 	RetireAgentTemplateHarnessPair(ctx context.Context, arg RetireAgentTemplateHarnessPairParams) error
 	RetireAgentTemplateHarnessPairs(ctx context.Context, arg RetireAgentTemplateHarnessPairsParams) error
 	RetireOtherAgentTemplateHarnessPairs(ctx context.Context, arg RetireOtherAgentTemplateHarnessPairsParams) error

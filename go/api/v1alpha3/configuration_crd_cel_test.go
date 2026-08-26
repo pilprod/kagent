@@ -71,9 +71,55 @@ func TestConfigurationCRDValidation(t *testing.T) {
 			name: "Harness rejects tag-only image",
 			object: validHarness(namespace, "harness-tagged-image", HarnessSpec{
 				Kagent:   &KagentHarness{},
-				Workload: HarnessWorkload{Image: "registry.example.com/kagent:latest"},
+				Workload: &HarnessWorkload{Image: "registry.example.com/kagent:latest"},
 			}),
 			wantReject: "spec.workload.image",
+		},
+		{
+			name: "kagent Harness requires workload",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "kagent-no-workload", Namespace: namespace}, Spec: HarnessSpec{
+				Kagent: &KagentHarness{},
+				Substrate: &HarnessSubstratePolicy{
+					WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+					SnapshotPolicy: HarnessSnapshotPolicy{Location: "gs://snapshots/kagent"},
+				},
+			}},
+			wantReject: "kagent requires workload and substrate",
+		},
+		{
+			name: "kagent Harness requires substrate",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "kagent-no-substrate", Namespace: namespace}, Spec: HarnessSpec{
+				Kagent:   &KagentHarness{},
+				Workload: &HarnessWorkload{Image: "registry.example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			}},
+			wantReject: "kagent requires workload and substrate",
+		},
+		{
+			name: "Codex Harness forbids workload",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "codex-workload", Namespace: namespace}, Spec: HarnessSpec{
+				Codex:    &CodexHarness{},
+				Workload: &HarnessWorkload{Image: "registry.example.com/codex@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			}},
+			wantReject: "codex and claude forbid workload, substrate, and env",
+		},
+		{
+			name: "Claude Harness forbids substrate",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "claude-substrate", Namespace: namespace}, Spec: HarnessSpec{
+				Claude: &ClaudeHarness{},
+				Substrate: &HarnessSubstratePolicy{
+					WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+					SnapshotPolicy: HarnessSnapshotPolicy{Location: "gs://snapshots/claude"},
+				},
+			}},
+			wantReject: "codex and claude forbid workload, substrate, and env",
+		},
+		{
+			name: "Codex Harness forbids env",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "codex-env", Namespace: namespace}, Spec: HarnessSpec{
+				Codex: &CodexHarness{},
+				Env:   []HarnessEnvVar{{Name: "TOKEN", Value: &empty}},
+			}},
+			wantReject: "codex and claude forbid workload, substrate, and env",
 		},
 		{
 			name: "Harness env requires a value source",
@@ -99,7 +145,12 @@ func TestConfigurationCRDValidation(t *testing.T) {
 			name: "valid Harness",
 			object: validHarness(namespace, "valid-harness", HarnessSpec{
 				Claude: &ClaudeHarness{},
-				Env:    []HarnessEnvVar{{Name: "EMPTY", Value: &empty}},
+			}),
+		},
+		{
+			name: "valid kagent Harness",
+			object: validHarness(namespace, "valid-kagent-harness", HarnessSpec{
+				Kagent: &KagentHarness{},
 			}),
 		},
 		{
@@ -139,14 +190,16 @@ func TestConfigurationCRDValidation(t *testing.T) {
 }
 
 func validHarness(namespace, name string, overrides HarnessSpec) *Harness {
-	if overrides.Workload.Image == "" {
-		overrides.Workload.Image = "registry.example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	}
-	if overrides.Substrate.WorkerPoolRef.Name == "" {
-		overrides.Substrate.WorkerPoolRef.Name = "default"
-	}
-	if overrides.Substrate.SnapshotPolicy.Location == "" {
-		overrides.Substrate.SnapshotPolicy.Location = "gs://snapshots/kagent"
+	if overrides.Kagent != nil {
+		if overrides.Workload == nil {
+			overrides.Workload = &HarnessWorkload{Image: "registry.example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+		}
+		if overrides.Substrate == nil {
+			overrides.Substrate = &HarnessSubstratePolicy{
+				WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+				SnapshotPolicy: HarnessSnapshotPolicy{Location: "gs://snapshots/kagent"},
+			}
+		}
 	}
 	return &Harness{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: overrides}
 }
