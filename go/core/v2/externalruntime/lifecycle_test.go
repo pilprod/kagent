@@ -13,12 +13,13 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/v2/externalgateway"
+	"github.com/kagent-dev/kagent/go/core/v2/externalprofile"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-const lifecycleRevisionID = "runtime-revision-one"
+const lifecycleRevisionID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 type lifecycleRevisionStore struct {
 	revision *dbpkg.RuntimeRevision
@@ -194,6 +195,54 @@ func TestLifecycleRejectsInvalidAgentCards(t *testing.T) {
 				return marshalAgentCard(t, card)
 			},
 		},
+		{
+			name: "missing profile capability",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions = nil
+				return marshalAgentCard(t, card)
+			},
+		},
+		{
+			name: "duplicate profile capability",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions = append(card.Capabilities.Extensions, card.Capabilities.Extensions[0])
+				return marshalAgentCard(t, card)
+			},
+		},
+		{
+			name: "wrong profile capability version",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions[0].Params["version"] = "v2"
+				return marshalAgentCard(t, card)
+			},
+		},
+		{
+			name: "instruction profile capability disabled",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions[0].Params["instruction"] = false
+				return marshalAgentCard(t, card)
+			},
+		},
+		{
+			name: "tools profile capability enabled before support",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions[0].Params["tools"] = true
+				return marshalAgentCard(t, card)
+			},
+		},
+		{
+			name: "additional profile capability parameter",
+			card: func(t *testing.T) []byte {
+				card := testAgentCard(dbpkg.ExternalRuntimeCodex)
+				card.Capabilities.Extensions[0].Params["endpoint"] = "https://private.invalid"
+				return marshalAgentCard(t, card)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -214,6 +263,41 @@ func TestLifecycleRejectsInvalidAgentCards(t *testing.T) {
 			assert.NotErrorIs(t, result.err, externalgateway.ErrOffline)
 		})
 	}
+}
+
+func TestLifecycleRejectsPreparedToolsUntilLocalCapabilitySupportsThem(t *testing.T) {
+	slot := externalgateway.SlotKey{DeviceID: "device-one", SlotID: "slot-a", Runtime: externalgateway.RuntimeCodex}
+	environment := newExternalEnvironment(t, slot)
+	session := environment.connectPaths(t, slot, []string{mustAgentCardPath(t, dbpkg.ExternalRuntimeCodex)})
+	revision := externalRevision(dbpkg.ExternalRuntimeCodex)
+	revision.ExternalProfile = []byte(`{"version":"v1","instruction":"","tools":[{"server":"files","allow":["read"]}]}`)
+	lifecycle := newTestLifecycle(t, environment.broker, revision, map[dbpkg.ExternalRuntime]externalgateway.SlotKey{
+		dbpkg.ExternalRuntimeCodex: slot,
+	})
+
+	outcome := createAsync(t.Context(), lifecycle, externalInstance(""))
+	frame := environment.pollForFrame(t, session)
+	require.Equal(t, http.StatusNoContent, environment.complete(t, session, frame, validAgentCard(t, dbpkg.ExternalRuntimeCodex)))
+	result := <-outcome
+	assert.Empty(t, result.endpoint)
+	require.ErrorContains(t, errors.Unwrap(result.err), "profile tool allowlist")
+}
+
+func TestLifecycleRejectsMalformedPersistedProfileBeforeProbe(t *testing.T) {
+	slot := externalgateway.SlotKey{DeviceID: "device-one", SlotID: "slot-a", Runtime: externalgateway.RuntimeCodex}
+	environment := newExternalEnvironment(t, slot)
+	session := environment.connectPaths(t, slot, []string{mustAgentCardPath(t, dbpkg.ExternalRuntimeCodex)})
+	revision := externalRevision(dbpkg.ExternalRuntimeCodex)
+	revision.ExternalProfile = []byte(`{"version":"v1","instruction":""}`)
+	lifecycle := newTestLifecycle(t, environment.broker, revision, map[dbpkg.ExternalRuntime]externalgateway.SlotKey{
+		dbpkg.ExternalRuntimeCodex: slot,
+	})
+
+	endpoint, err := lifecycle.Create(t.Context(), externalInstance(""))
+	assert.Empty(t, endpoint)
+	require.Error(t, err)
+	status, _ := environment.poll(t, session)
+	assert.Equal(t, http.StatusNoContent, status, "invalid persisted profile must fail before probing a local runtime")
 }
 
 func TestAgentCardResponseRejectsCloseErrorContentTypeAndOversizedBody(t *testing.T) {
@@ -252,7 +336,7 @@ func TestAgentCardResponseRejectsCloseErrorContentTypeAndOversizedBody(t *testin
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{tt.contentType}},
 				Body:       body,
-			})
+			}, externalprofile.Profile{})
 			require.Error(t, err)
 			if tt.wantErrorIs != nil {
 				assert.ErrorIs(t, err, tt.wantErrorIs)
@@ -280,9 +364,11 @@ func TestLifecycleRejectsAuthorityAndRevisionMismatchBeforeProbe(t *testing.T) {
 		{
 			name: "revision identity",
 			revision: &dbpkg.RuntimeRevision{
-				Revision:        "another-revision",
+				Revision:        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 				BackendKind:     dbpkg.RuntimeBackendKindExternal,
 				ExternalRuntime: dbpkg.ExternalRuntimeCodex,
+				ExternalProfile: []byte(`{"version":"v1","instruction":"","tools":[]}`),
+				Phase:           "Ready",
 			},
 			authority: "device-one.slot-a.codex",
 		},
@@ -426,7 +512,15 @@ func testAgentCard(runtime dbpkg.ExternalRuntime) *a2atype.AgentCard {
 		DefaultInputModes:  []string{"text/plain"},
 		DefaultOutputModes: []string{"text/plain"},
 		Skills:             []a2atype.AgentSkill{},
-		Capabilities:       a2atype.AgentCapabilities{Streaming: false},
+		Capabilities: a2atype.AgentCapabilities{
+			Streaming: false,
+			Extensions: []a2atype.AgentExtension{{
+				URI: externalprofile.ExtensionURI,
+				Params: map[string]any{
+					"version": externalprofile.Version, "instruction": true, "tools": false,
+				},
+			}},
+		},
 		SupportedInterfaces: []*a2atype.AgentInterface{{
 			URL:             "http://127.0.0.1" + path,
 			ProtocolBinding: a2atype.TransportProtocolJSONRPC,

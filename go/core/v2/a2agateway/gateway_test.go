@@ -20,6 +20,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
+	"github.com/kagent-dev/kagent/go/core/v2/externalprofile"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,8 +29,9 @@ import (
 )
 
 const (
-	gatewayTestID  = "8bd650a8-9775-488f-8bc1-0d52bf7bdcab"
-	gatewayTestURL = "https://gateway.example"
+	gatewayTestID         = "8bd650a8-9775-488f-8bc1-0d52bf7bdcab"
+	gatewayTestRevisionID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	gatewayTestURL        = "https://gateway.example"
 )
 
 type gatewayTestSession struct{}
@@ -41,6 +43,8 @@ func (gatewayTestSession) Principal() auth.Principal {
 type gatewayTestStore struct {
 	instance              *apiv1alpha1.AgentInstance
 	revision              *dbpkg.RuntimeRevision
+	revisionErr           error
+	requestedRevision     string
 	err                   error
 	task                  *a2atype.Task
 	tasks                 []*a2atype.Task
@@ -51,6 +55,7 @@ type gatewayTestStore struct {
 	interruptResult       bool
 	interrupted           bool
 	createdTasks          int
+	requestHashes         [][]byte
 	stored                []a2atype.Event
 	snapshot              *dbpkg.AgentInstanceTaskSnapshot
 	onStore               func()
@@ -62,8 +67,18 @@ func (s *gatewayTestStore) GetAgentInstance(_ context.Context, namespace, id, us
 	return s.instance, s.err
 }
 
-func (s *gatewayTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
-	return s.revision, nil
+func (s *gatewayTestStore) GetRuntimeRevision(_ context.Context, revision string) (*dbpkg.RuntimeRevision, error) {
+	s.requestedRevision = revision
+	if s.revisionErr != nil {
+		return nil, s.revisionErr
+	}
+	if s.revision != nil {
+		return s.revision, nil
+	}
+	return &dbpkg.RuntimeRevision{
+		Revision: revision, BackendKind: dbpkg.RuntimeBackendKindSubstrate,
+		ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
+	}, nil
 }
 
 func (s *gatewayTestStore) StoreAgentInstanceTaskEvent(_ context.Context, _ string, task *a2atype.Task, event a2atype.Event, snapshot *dbpkg.AgentInstanceTaskSnapshot) error {
@@ -82,7 +97,8 @@ func (s *gatewayTestStore) StoreAgentInstanceTaskEvent(_ context.Context, _ stri
 	return nil
 }
 
-func (s *gatewayTestStore) CreateAgentInstanceTask(_ context.Context, _ string, _ []byte, task *a2atype.Task) (*a2atype.Task, bool, error) {
+func (s *gatewayTestStore) CreateAgentInstanceTask(_ context.Context, _ string, requestHash []byte, task *a2atype.Task) (*a2atype.Task, bool, error) {
+	s.requestHashes = append(s.requestHashes, append([]byte(nil), requestHash...))
 	if s.taskErr != nil {
 		return nil, false, s.taskErr
 	}
@@ -179,6 +195,7 @@ type gatewayTestRuntime struct {
 	cancelErr      error
 	sendCalls      int
 	sentTaskID     a2atype.TaskID
+	sentRequest    *a2atype.SendMessageRequest
 }
 
 func (r *gatewayTestRuntime) CancelTask(context.Context, a2aclient.ServiceParams, *a2atype.CancelTaskRequest) (*a2atype.Task, error) {
@@ -208,6 +225,7 @@ func (r *gatewayTestRuntime) SubscribeToTask(context.Context, a2aclient.ServiceP
 
 func (r *gatewayTestRuntime) SendMessage(_ context.Context, _ a2aclient.ServiceParams, req *a2atype.SendMessageRequest) (a2atype.SendMessageResult, error) {
 	r.sent = true
+	r.sentRequest = req
 	r.privateTask, _ = apia2a.TakeStoredTask(req.Message)
 	r.sendCalls++
 	r.sentTaskID = req.Message.TaskID
@@ -215,6 +233,7 @@ func (r *gatewayTestRuntime) SendMessage(_ context.Context, _ a2aclient.ServiceP
 }
 
 func (r *gatewayTestRuntime) SendStreamingMessage(_ context.Context, _ a2aclient.ServiceParams, req *a2atype.SendMessageRequest) iter.Seq2[a2atype.Event, error] {
+	r.sentRequest = req
 	return func(yield func(a2atype.Event, error) bool) {
 		yield(&a2atype.Task{ID: req.Message.TaskID, ContextID: req.Message.ContextID, Status: a2atype.TaskStatus{State: a2atype.TaskStateCompleted}}, nil)
 	}
@@ -303,7 +322,7 @@ func gatewayTestContextWithRoute(namespace, id string) context.Context {
 func gatewayTestInstance() *apiv1alpha1.AgentInstance {
 	return &apiv1alpha1.AgentInstance{
 		Id: gatewayTestID, Namespace: "team-a", Creator: "alice",
-		PreparedRevision: "revision-1",
+		PreparedRevision: gatewayTestRevisionID,
 		A2AAuthority:     "private-runtime-authority",
 		State:            apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
 	}
@@ -311,6 +330,13 @@ func gatewayTestInstance() *apiv1alpha1.AgentInstance {
 
 func gatewayTestRequest() *a2atype.SendMessageRequest {
 	return &a2atype.SendMessageRequest{Message: a2atype.NewMessage(a2atype.MessageRoleUser, a2atype.NewTextPart("hello"))}
+}
+
+func gatewayExternalRevision(profile string) *dbpkg.RuntimeRevision {
+	return &dbpkg.RuntimeRevision{
+		Revision: gatewayTestRevisionID, BackendKind: dbpkg.RuntimeBackendKindExternal,
+		ExternalRuntime: dbpkg.ExternalRuntimeCodex, ExternalProfile: []byte(profile), Phase: "Ready",
+	}
 }
 
 func TestGatewayResolvesAuthenticatedHeadersBeforeSending(t *testing.T) {
@@ -332,6 +358,196 @@ func TestGatewayResolvesAuthenticatedHeadersBeforeSending(t *testing.T) {
 	}
 	if authorizer.verb != auth.VerbCreate || authorizer.resource != (auth.Resource{Type: "AgentInstance", Name: "team-a/" + gatewayTestID}) {
 		t.Fatalf("authorization = %q %#v", authorizer.verb, authorizer.resource)
+	}
+}
+
+func TestGatewayInjectsPersistedExternalProfileAndPreservesUnrelatedMetadata(t *testing.T) {
+	store := &gatewayTestStore{
+		instance: gatewayTestInstance(),
+		revision: gatewayExternalRevision(`{"version":"v1","instruction":"review carefully","tools":[]}`),
+	}
+	runtime := &gatewayTestRuntime{}
+	gateway := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{client: gatewayTestClient(t, runtime)}, &gatewayTestWorkflow{}, gatewayTestURL)
+	request := gatewayTestRequest()
+	request.Metadata = map[string]any{
+		"https://kagent.dev/extensions/hitl/v1": map[string]any{"answer": "approved"},
+		externalprofile.ExtensionURI:            map[string]any{"instruction": "caller supplied"},
+	}
+
+	if _, err := gateway.SendMessage(gatewayTestContext(), request); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.sentRequest == nil {
+		t.Fatal("external runtime did not receive a request")
+	}
+	if got := runtime.sentRequest.Metadata["https://kagent.dev/extensions/hitl/v1"].(map[string]any)["answer"]; got != "approved" {
+		t.Fatalf("unrelated HITL metadata = %#v, want preserved", got)
+	}
+	profile, ok := runtime.sentRequest.Metadata[externalprofile.ExtensionURI].(map[string]any)
+	if !ok {
+		t.Fatalf("external profile metadata = %#v", runtime.sentRequest.Metadata[externalprofile.ExtensionURI])
+	}
+	if profile["version"] != "v1" || profile["revision"] != gatewayTestRevisionID || profile["instruction"] != "review carefully" {
+		t.Fatalf("external profile metadata = %#v", profile)
+	}
+	tools, ok := profile["tools"].([]any)
+	if !ok || len(tools) != 0 {
+		t.Fatalf("external profile tools = %#v, want an explicit empty list", profile["tools"])
+	}
+	if store.requestedRevision != gatewayTestRevisionID || len(store.requestHashes) != 1 {
+		t.Fatalf("prepared revision = %q, request hashes = %d", store.requestedRevision, len(store.requestHashes))
+	}
+}
+
+func TestGatewayInjectsExternalProfileForStreamingAndReply(t *testing.T) {
+	t.Run("streaming", func(t *testing.T) {
+		store := &gatewayTestStore{
+			instance: gatewayTestInstance(),
+			revision: gatewayExternalRevision(`{"version":"v1","instruction":"stream instruction","tools":[]}`),
+		}
+		runtime := &gatewayTestRuntime{}
+		gateway := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{client: gatewayTestClient(t, runtime)}, &gatewayTestWorkflow{}, gatewayTestURL)
+		for _, err := range gateway.SendStreamingMessage(gatewayTestContext(), gatewayTestRequest()) {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		profile := runtime.sentRequest.Metadata[externalprofile.ExtensionURI].(map[string]any)
+		if profile["instruction"] != "stream instruction" || profile["revision"] != gatewayTestRevisionID {
+			t.Fatalf("stream profile = %#v", profile)
+		}
+	})
+
+	t.Run("reply", func(t *testing.T) {
+		waiting := &a2atype.Task{
+			ID: "task-1", ContextID: gatewayTestID,
+			Status: a2atype.TaskStatus{State: a2atype.TaskStateInputRequired},
+		}
+		store := &gatewayTestStore{
+			instance: gatewayTestInstance(), task: waiting,
+			revision: gatewayExternalRevision(`{"version":"v1","instruction":"reply instruction","tools":[]}`),
+		}
+		runtime := &gatewayTestRuntime{}
+		gateway := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{client: gatewayTestClient(t, runtime)}, &gatewayTestWorkflow{}, gatewayTestURL)
+		reply := a2atype.NewMessage(a2atype.MessageRoleUser, a2atype.NewTextPart("approved"))
+		reply.TaskID = waiting.ID
+		request := &a2atype.SendMessageRequest{
+			Message: reply,
+			Metadata: map[string]any{
+				"https://kagent.dev/extensions/hitl/v1": "keep",
+				externalprofile.ExtensionURI:            "replace",
+			},
+		}
+		if _, err := gateway.SendMessage(gatewayTestContext(), request); err != nil {
+			t.Fatal(err)
+		}
+		if runtime.sentRequest.Metadata["https://kagent.dev/extensions/hitl/v1"] != "keep" {
+			t.Fatalf("reply metadata = %#v", runtime.sentRequest.Metadata)
+		}
+		profile := runtime.sentRequest.Metadata[externalprofile.ExtensionURI].(map[string]any)
+		if profile["instruction"] != "reply instruction" || profile["revision"] != gatewayTestRevisionID {
+			t.Fatalf("reply profile = %#v", profile)
+		}
+	})
+}
+
+func TestGatewayRejectsReservedMessageMetadata(t *testing.T) {
+	for name, stream := range map[string]bool{"send": false, "stream": true} {
+		t.Run(name, func(t *testing.T) {
+			store := &gatewayTestStore{
+				instance: gatewayTestInstance(),
+				revision: gatewayExternalRevision(`{"version":"v1","instruction":"","tools":[]}`),
+			}
+			dialer := &gatewayTestDialer{}
+			gateway := New(store, &gatewayTestAuthorizer{}, dialer, &gatewayTestWorkflow{}, gatewayTestURL)
+			request := gatewayTestRequest()
+			request.Message.Metadata = map[string]any{externalprofile.ExtensionURI: map[string]any{"instruction": "spoofed"}}
+			if stream {
+				for event, err := range gateway.SendStreamingMessage(gatewayTestContext(), request) {
+					if event != nil || err == nil {
+						t.Fatalf("stream result = %#v, %v", event, err)
+					}
+				}
+			} else if _, err := gateway.SendMessage(gatewayTestContext(), request); err == nil {
+				t.Fatal("SendMessage accepted reserved Message.Metadata")
+			}
+			if dialer.instance != nil || store.createdTasks != 0 {
+				t.Fatalf("rejected message dialed=%v created tasks=%d", dialer.instance != nil, store.createdTasks)
+			}
+		})
+	}
+}
+
+func TestGatewayRejectsInvalidExternalRevisionBeforeDispatch(t *testing.T) {
+	otherRevision := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	tests := map[string]*dbpkg.RuntimeRevision{
+		"mismatched revision": {
+			Revision: otherRevision, BackendKind: dbpkg.RuntimeBackendKindExternal,
+			ExternalRuntime: dbpkg.ExternalRuntimeCodex,
+			ExternalProfile: []byte(`{"version":"v1","instruction":"","tools":[]}`), Phase: "Ready",
+		},
+		"malformed JSON": gatewayExternalRevision(`{"version":`),
+		"missing field":  gatewayExternalRevision(`{"version":"v1","tools":[]}`),
+		"unknown field":  gatewayExternalRevision(`{"version":"v1","instruction":"","tools":[],"token":"secret"}`),
+		"unsorted tools": gatewayExternalRevision(`{"version":"v1","instruction":"","tools":[{"server":"z","allow":["read"]},{"server":"a","allow":["read"]}]}`),
+	}
+	for name, revision := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := &gatewayTestStore{instance: gatewayTestInstance(), revision: revision}
+			dialer := &gatewayTestDialer{}
+			gateway := New(store, &gatewayTestAuthorizer{}, dialer, &gatewayTestWorkflow{}, gatewayTestURL)
+			if _, err := gateway.SendMessage(gatewayTestContext(), gatewayTestRequest()); err == nil {
+				t.Fatal("SendMessage accepted an invalid external revision")
+			}
+			if dialer.instance != nil || store.createdTasks != 0 {
+				t.Fatalf("invalid revision dialed=%v created tasks=%d", dialer.instance != nil, store.createdTasks)
+			}
+		})
+	}
+}
+
+func TestGatewayDoesNotAcceptExternalProfileMetadataForSubstrate(t *testing.T) {
+	store := &gatewayTestStore{instance: gatewayTestInstance()}
+	dialer := &gatewayTestDialer{}
+	gateway := New(store, &gatewayTestAuthorizer{}, dialer, &gatewayTestWorkflow{}, gatewayTestURL)
+	request := gatewayTestRequest()
+	request.Metadata = map[string]any{externalprofile.ExtensionURI: "caller supplied"}
+
+	if _, err := gateway.SendMessage(gatewayTestContext(), request); err == nil {
+		t.Fatal("substrate AgentInstance accepted external profile metadata")
+	}
+	if dialer.instance != nil || store.createdTasks != 0 {
+		t.Fatalf("rejected substrate request dialed=%v created tasks=%d", dialer.instance != nil, store.createdTasks)
+	}
+}
+
+func TestGatewayIdempotencyHashIncludesPersistedExternalProfile(t *testing.T) {
+	requestHash := func(instruction, callerValue string) []byte {
+		store := &gatewayTestStore{
+			instance: gatewayTestInstance(),
+			revision: gatewayExternalRevision(`{"version":"v1","instruction":"` + instruction + `","tools":[]}`),
+		}
+		runtime := &gatewayTestRuntime{}
+		gateway := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{client: gatewayTestClient(t, runtime)}, &gatewayTestWorkflow{}, gatewayTestURL)
+		request := gatewayTestRequest()
+		request.Message.ID = "fixed-message-id"
+		request.Metadata = map[string]any{externalprofile.ExtensionURI: callerValue}
+		if _, err := gateway.SendMessage(gatewayTestContext(), request); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.requestHashes) != 1 {
+			t.Fatalf("request hashes = %d, want one", len(store.requestHashes))
+		}
+		return store.requestHashes[0]
+	}
+
+	first := requestHash("first", "spoof-a")
+	second := requestHash("second", "spoof-a")
+	if string(first) == string(second) {
+		t.Fatal("idempotency hash did not include the immutable external profile")
+	}
+	if overwritten := requestHash("first", "spoof-b"); string(first) != string(overwritten) {
+		t.Fatal("caller-supplied reserved metadata reached the idempotency hash instead of being overwritten")
 	}
 }
 
@@ -593,11 +809,14 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 	store := &gatewayTestStore{
 		instance: gatewayTestInstance(),
 		revision: &dbpkg.RuntimeRevision{
-			Revision: "revision-1",
+			Revision: gatewayTestRevisionID,
 			AgentCard: []byte(`{
 				"name":"assistant","description":"pinned description","version":"v1",
 				"supportedInterfaces":[{"url":"http://127.0.0.1:80","protocolBinding":"GRPC","protocolVersion":"1.0"}],
-				"capabilities":{"pushNotifications":true,"extensions":[{"uri":"https://kagent.dev/extensions/hitl/v1","required":false}]},"skills":[],
+				"capabilities":{"pushNotifications":true,"extensions":[
+					{"uri":"https://kagent.dev/extensions/hitl/v1","required":false},
+					{"uri":"https://yourown.chat/a2a/extensions/external-agent-profile/v1","params":{"version":"v1","instruction":true,"tools":false}}
+				]},"skills":[],
 				"defaultInputModes":["text"],"defaultOutputModes":["text"]
 			}`),
 		},
@@ -620,10 +839,8 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 	if !card.Capabilities.Streaming || !card.Capabilities.ExtendedAgentCard || card.Capabilities.PushNotifications {
 		t.Fatalf("gateway capabilities = %#v", card.Capabilities)
 	}
-	// Transport and streaming are the gateway's to state, but extensions describe
-	// what the runtime can negotiate. Replacing the whole struct used to drop them,
-	// which left a client no way to discover that an agent's question is answerable
-	// while the card still looked complete.
+	// Public extensions remain discoverable, but the local-host profile capability
+	// is a private gateway-to-runtime contract and must not be advertised to callers.
 	if len(card.Capabilities.Extensions) != 1 || card.Capabilities.Extensions[0].URI != "https://kagent.dev/extensions/hitl/v1" {
 		t.Fatalf("runtime extensions = %#v, want the runtime's own preserved", card.Capabilities.Extensions)
 	}

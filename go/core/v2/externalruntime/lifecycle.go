@@ -15,6 +15,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/v2/externalgateway"
+	"github.com/kagent-dev/kagent/go/core/v2/externalprofile"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 )
 
@@ -62,7 +63,7 @@ func (l *Lifecycle) Create(ctx context.Context, instance *apiv1alpha1.AgentInsta
 	if existing := instance.GetA2AAuthority(); existing != "" && existing != resolved.authority {
 		return runtimebackend.Endpoint{}, newLifecycleError("create", instance, fmt.Errorf("persisted authority does not match runtime placement"))
 	}
-	if err := l.probe(ctx, instance, resolved.slot, resolved.runtime); err != nil {
+	if err := l.probe(ctx, instance, resolved.slot, resolved.runtime, resolved.profile); err != nil {
 		return runtimebackend.Endpoint{}, err
 	}
 	return runtimebackend.Endpoint{A2AAuthority: resolved.authority}, nil
@@ -96,7 +97,7 @@ func (l *Lifecycle) Resume(ctx context.Context, instance *apiv1alpha1.AgentInsta
 	if err := validateAuthority(instance, resolved); err != nil {
 		return newLifecycleError("resume", instance, err)
 	}
-	return l.probe(ctx, instance, resolved.slot, resolved.runtime)
+	return l.probe(ctx, instance, resolved.slot, resolved.runtime, resolved.profile)
 }
 
 // Delete is a logical idempotent operation. It validates persisted routing
@@ -109,6 +110,7 @@ type resolvedRuntime struct {
 	runtime   dbpkg.ExternalRuntime
 	slot      externalgateway.SlotKey
 	authority string
+	profile   externalprofile.Profile
 }
 
 func (l *Lifecycle) resolve(ctx context.Context, instance *apiv1alpha1.AgentInstance) (resolvedRuntime, error) {
@@ -137,6 +139,13 @@ func (l *Lifecycle) resolve(ctx context.Context, instance *apiv1alpha1.AgentInst
 	if revision.BackendKind != dbpkg.RuntimeBackendKindExternal {
 		return resolvedRuntime{}, newLifecycleError("validate prepared revision", instance, fmt.Errorf("runtime revision does not select the external backend"))
 	}
+	profile, err := externalprofile.Decode(revision.ExternalProfile)
+	if err != nil {
+		return resolvedRuntime{}, newLifecycleError("validate prepared revision", instance, err)
+	}
+	if _, err := externalprofile.NewEnvelope(revision.Revision, profile); err != nil {
+		return resolvedRuntime{}, newLifecycleError("validate prepared revision", instance, err)
+	}
 	expectedRuntime, err := gatewayRuntime(revision.ExternalRuntime)
 	if err != nil {
 		return resolvedRuntime{}, newLifecycleError("validate prepared revision", instance, err)
@@ -152,7 +161,7 @@ func (l *Lifecycle) resolve(ctx context.Context, instance *apiv1alpha1.AgentInst
 	if err != nil {
 		return resolvedRuntime{}, newLifecycleError("select placement", instance, err)
 	}
-	return resolvedRuntime{runtime: revision.ExternalRuntime, slot: slot, authority: authority}, nil
+	return resolvedRuntime{runtime: revision.ExternalRuntime, slot: slot, authority: authority, profile: profile}, nil
 }
 
 func (l *Lifecycle) validateRoutingWhenPresent(ctx context.Context, instance *apiv1alpha1.AgentInstance, operation string) error {
@@ -186,7 +195,7 @@ func validateAuthority(instance *apiv1alpha1.AgentInstance, resolved resolvedRun
 	return nil
 }
 
-func (l *Lifecycle) probe(ctx context.Context, instance *apiv1alpha1.AgentInstance, slot externalgateway.SlotKey, runtime dbpkg.ExternalRuntime) error {
+func (l *Lifecycle) probe(ctx context.Context, instance *apiv1alpha1.AgentInstance, slot externalgateway.SlotKey, runtime dbpkg.ExternalRuntime, profile externalprofile.Profile) error {
 	path, err := agentCardPath(runtime)
 	if err != nil {
 		return newLifecycleError("probe Agent Card", instance, err)
@@ -202,7 +211,7 @@ func (l *Lifecycle) probe(ctx context.Context, instance *apiv1alpha1.AgentInstan
 	if err != nil {
 		return newLifecycleError("probe Agent Card", instance, err)
 	}
-	if err := validateAgentCardResponse(response); err != nil {
+	if err := validateAgentCardResponse(response, profile); err != nil {
 		return newLifecycleError("probe Agent Card", instance, err)
 	}
 	return nil
@@ -219,7 +228,7 @@ func agentCardPath(runtime dbpkg.ExternalRuntime) (string, error) {
 	}
 }
 
-func validateAgentCardResponse(response *http.Response) error {
+func validateAgentCardResponse(response *http.Response, profile externalprofile.Profile) error {
 	if response == nil || response.Body == nil {
 		return fmt.Errorf("external runtime returned an empty Agent Card response")
 	}
@@ -242,22 +251,54 @@ func validateAgentCardResponse(response *http.Response) error {
 	if err := json.Unmarshal(body, &card); err != nil {
 		return err
 	}
-	return validateAgentCard(&card)
+	return validateAgentCard(&card, profile)
 }
 
-func validateAgentCard(card *a2atype.AgentCard) error {
+func validateAgentCard(card *a2atype.AgentCard, profile externalprofile.Profile) error {
 	if card.Name == "" || card.Version == "" || len(card.DefaultInputModes) == 0 || len(card.DefaultOutputModes) == 0 {
 		return fmt.Errorf("external runtime Agent Card is missing required A2A fields")
 	}
 	if card.Capabilities.Streaming {
 		return fmt.Errorf("external runtime Agent Card must disable streaming")
 	}
+	compatibleInterface := false
 	for _, endpoint := range card.SupportedInterfaces {
 		if endpoint != nil && endpoint.URL != "" && endpoint.ProtocolBinding == a2atype.TransportProtocolJSONRPC && endpoint.ProtocolVersion == a2atype.Version {
-			return nil
+			compatibleInterface = true
+			break
 		}
 	}
-	return fmt.Errorf("external runtime Agent Card has no A2A 1.0 JSON-RPC interface")
+	if !compatibleInterface {
+		return fmt.Errorf("external runtime Agent Card has no A2A 1.0 JSON-RPC interface")
+	}
+	return validateProfileCapability(card.Capabilities.Extensions, profile)
+}
+
+func validateProfileCapability(extensions []a2atype.AgentExtension, profile externalprofile.Profile) error {
+	var capability *a2atype.AgentExtension
+	for i := range extensions {
+		if extensions[i].URI != externalprofile.ExtensionURI {
+			continue
+		}
+		if capability != nil {
+			return fmt.Errorf("external runtime Agent Card declares the profile capability more than once")
+		}
+		capability = &extensions[i]
+	}
+	if capability == nil {
+		return fmt.Errorf("external runtime Agent Card does not declare the profile capability")
+	}
+	params := capability.Params
+	version, versionOK := params["version"].(string)
+	instruction, instructionOK := params["instruction"].(bool)
+	tools, toolsOK := params["tools"].(bool)
+	if len(params) != 3 || !versionOK || version != externalprofile.Version || !instructionOK || !instruction || !toolsOK || tools {
+		return fmt.Errorf("external runtime Agent Card declares an incompatible profile capability")
+	}
+	if profile.RequiresTools() {
+		return fmt.Errorf("external runtime does not support the prepared profile tool allowlist")
+	}
+	return nil
 }
 
 func nilInterface(value any) bool {
