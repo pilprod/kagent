@@ -138,7 +138,7 @@ type Querier interface {
 	UpsertCrewAIFlowState(ctx context.Context, arg UpsertCrewAIFlowStateParams) error
 	UpsertCrewAIMemory(ctx context.Context, arg UpsertCrewAIMemoryParams) error
 	UpsertPushNotification(ctx context.Context, arg UpsertPushNotificationParams) error
-	UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) error
+	UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) (int64, error)
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
 	UpsertShareAccess(ctx context.Context, arg UpsertShareAccessParams) error
 	// UpsertTask returns the upserted id, or no rows when the write was rejected:

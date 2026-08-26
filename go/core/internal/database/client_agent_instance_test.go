@@ -292,6 +292,7 @@ func TestForkAgentInstanceCopiesBoundedHistory(t *testing.T) {
 		AgentTemplateName: "assistant", AgentTemplateUID: "template-uid",
 		HarnessName: "kagent", HarnessUID: "harness-uid",
 		SourceSnapshot: []byte("{}"), AgentCard: []byte(`{"name":"assistant"}`), EgressDestinations: []string{},
+		BackendKind:            dbpkg.RuntimeBackendKindSubstrate,
 		ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
 		ActorTemplateUID: "actor-template-uid", Phase: "Ready",
 	}
@@ -434,6 +435,7 @@ func TestAgentInstanceCreateAndTransitions(t *testing.T) {
 		AgentTemplateName: "assistant", AgentTemplateUID: "template-uid",
 		HarnessName: "kagent", HarnessUID: "harness-uid",
 		SourceSnapshot: []byte("{}"), AgentCard: []byte(`{"name":"assistant"}`), EgressDestinations: []string{},
+		BackendKind:            dbpkg.RuntimeBackendKindSubstrate,
 		ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
 		ActorTemplateUID: "actor-template-uid", Phase: "Ready",
 	}

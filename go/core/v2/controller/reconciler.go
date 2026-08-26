@@ -251,6 +251,7 @@ func (r *Reconciler) reconcilePair(ctx context.Context, key string) error {
 		AgentTemplateUID: pair.AgentTemplateUID, HarnessName: pair.HarnessName, HarnessUID: pair.HarnessUID,
 		SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON,
 		EgressDestinations:     state.Revision.EgressDestinations,
+		BackendKind:            dbpkg.RuntimeBackendKindSubstrate,
 		ActorTemplateNamespace: observed.Namespace, ActorTemplateName: observed.Name, ActorTemplateUID: string(observed.UID),
 		Phase: string(observed.Status.Phase), GoldenSnapshot: observed.Status.GoldenSnapshot,
 	}
