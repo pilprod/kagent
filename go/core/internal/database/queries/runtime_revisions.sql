@@ -15,23 +15,33 @@ ON CONFLICT (namespace, agent_template_uid, harness_uid) DO UPDATE SET
 INSERT INTO runtime_revision (
     revision, namespace, agent_template_name, agent_template_uid,
     harness_name, harness_uid, source_snapshot, agent_card, egress_destinations,
-    backend_kind, external_runtime,
+    backend_kind, external_runtime, external_profile,
     actor_template_namespace, actor_template_name, actor_template_uid,
     phase, golden_snapshot
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14, $15, $16
+    $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
 ON CONFLICT (revision) DO UPDATE SET
-    agent_card = EXCLUDED.agent_card,
     actor_template_uid = EXCLUDED.actor_template_uid,
     phase = EXCLUDED.phase,
     golden_snapshot = EXCLUDED.golden_snapshot,
     updated_at = NOW()
-WHERE runtime_revision.backend_kind = EXCLUDED.backend_kind
-  AND COALESCE(runtime_revision.external_runtime, '') = COALESCE(EXCLUDED.external_runtime, '');
+WHERE runtime_revision.namespace = EXCLUDED.namespace
+  AND runtime_revision.agent_template_name = EXCLUDED.agent_template_name
+  AND runtime_revision.agent_template_uid = EXCLUDED.agent_template_uid
+  AND runtime_revision.harness_name = EXCLUDED.harness_name
+  AND runtime_revision.harness_uid = EXCLUDED.harness_uid
+  AND runtime_revision.source_snapshot = EXCLUDED.source_snapshot
+  AND runtime_revision.agent_card = EXCLUDED.agent_card
+  AND runtime_revision.egress_destinations = EXCLUDED.egress_destinations
+  AND runtime_revision.backend_kind = EXCLUDED.backend_kind
+  AND runtime_revision.external_runtime IS NOT DISTINCT FROM EXCLUDED.external_runtime
+  AND runtime_revision.external_profile IS NOT DISTINCT FROM EXCLUDED.external_profile
+  AND runtime_revision.actor_template_namespace IS NOT DISTINCT FROM EXCLUDED.actor_template_namespace
+  AND runtime_revision.actor_template_name IS NOT DISTINCT FROM EXCLUDED.actor_template_name;
 
--- name: MarkRuntimeRevisionSuccessful :exec
+-- name: MarkRuntimeRevisionSuccessful :execrows
 UPDATE agent_template_harness_pair
 SET latest_successful_revision = sqlc.arg(revision), updated_at = NOW()
 WHERE namespace = sqlc.arg(namespace)

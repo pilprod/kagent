@@ -46,9 +46,11 @@ func TestDisabledExternalGatewayBuildsSubstrateOnlyRouter(t *testing.T) {
 	store := controllerRevisionStoreFunc(func(_ context.Context, revision string) (*dbpkg.RuntimeRevision, error) {
 		switch revision {
 		case "existing-substrate-revision":
-			return &dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindSubstrate}, nil
+			value := controllerSubstrateRevision()
+			return &value, nil
 		case "external-revision":
-			return &dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: dbpkg.ExternalRuntimeCodex}, nil
+			value := controllerExternalRevision(dbpkg.ExternalRuntimeCodex)
+			return &value, nil
 		default:
 			return nil, nil
 		}
@@ -78,7 +80,8 @@ func TestDisabledExternalGatewayBuildsSubstrateOnlyRouter(t *testing.T) {
 
 func TestEnabledExternalGatewayAddsExplicitExternalBackend(t *testing.T) {
 	store := controllerRevisionStoreFunc(func(context.Context, string) (*dbpkg.RuntimeRevision, error) {
-		return &dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: dbpkg.ExternalRuntimeClaude}, nil
+		value := controllerExternalRevision(dbpkg.ExternalRuntimeClaude)
+		return &value, nil
 	})
 	substrate := &controllerBackendStub{}
 	external := &controllerBackendStub{}
@@ -96,5 +99,18 @@ func TestEnabledExternalGatewayAddsExplicitExternalBackend(t *testing.T) {
 	}
 	if external.createCalls != 1 || substrate.createCalls != 0 {
 		t.Fatalf("wrong backend selected: external=%d substrate=%d", external.createCalls, substrate.createCalls)
+	}
+}
+
+func controllerSubstrateRevision() dbpkg.RuntimeRevision {
+	return dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindSubstrate, ActorTemplateNamespace: "team-a", ActorTemplateName: "actor",
+	}
+}
+
+func controllerExternalRevision(runtime dbpkg.ExternalRuntime) dbpkg.RuntimeRevision {
+	return dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: runtime,
+		ExternalProfile: []byte(`{"version":"v1","instruction":"","tools":[]}`), Phase: "Ready",
 	}
 }

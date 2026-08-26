@@ -28,7 +28,7 @@ func (q *Queries) DeleteUnreferencedRuntimeRevision(ctx context.Context, revisio
 }
 
 const getRuntimeRevision = `-- name: GetRuntimeRevision :one
-SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, backend_kind, external_runtime FROM runtime_revision WHERE revision = $1
+SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, backend_kind, external_runtime, external_profile FROM runtime_revision WHERE revision = $1
 `
 
 func (q *Queries) GetRuntimeRevision(ctx context.Context, revision string) (RuntimeRevision, error) {
@@ -53,12 +53,13 @@ func (q *Queries) GetRuntimeRevision(ctx context.Context, revision string) (Runt
 		&i.AgentCard,
 		&i.BackendKind,
 		&i.ExternalRuntime,
+		&i.ExternalProfile,
 	)
 	return i, err
 }
 
 const listUnreferencedRuntimeRevisions = `-- name: ListUnreferencedRuntimeRevisions :many
-SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, backend_kind, external_runtime FROM runtime_revision r
+SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, backend_kind, external_runtime, external_profile FROM runtime_revision r
 WHERE NOT EXISTS (
     SELECT 1 FROM agent_template_harness_pair p
     WHERE p.retired_at IS NULL
@@ -97,6 +98,7 @@ func (q *Queries) ListUnreferencedRuntimeRevisions(ctx context.Context) ([]Runti
 			&i.AgentCard,
 			&i.BackendKind,
 			&i.ExternalRuntime,
+			&i.ExternalProfile,
 		); err != nil {
 			return nil, err
 		}
@@ -108,7 +110,7 @@ func (q *Queries) ListUnreferencedRuntimeRevisions(ctx context.Context) ([]Runti
 	return items, nil
 }
 
-const markRuntimeRevisionSuccessful = `-- name: MarkRuntimeRevisionSuccessful :exec
+const markRuntimeRevisionSuccessful = `-- name: MarkRuntimeRevisionSuccessful :execrows
 UPDATE agent_template_harness_pair
 SET latest_successful_revision = $1, updated_at = NOW()
 WHERE namespace = $2
@@ -125,14 +127,17 @@ type MarkRuntimeRevisionSuccessfulParams struct {
 	HarnessUid       string
 }
 
-func (q *Queries) MarkRuntimeRevisionSuccessful(ctx context.Context, arg MarkRuntimeRevisionSuccessfulParams) error {
-	_, err := q.db.Exec(ctx, markRuntimeRevisionSuccessful,
+func (q *Queries) MarkRuntimeRevisionSuccessful(ctx context.Context, arg MarkRuntimeRevisionSuccessfulParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRuntimeRevisionSuccessful,
 		arg.Revision,
 		arg.Namespace,
 		arg.AgentTemplateUid,
 		arg.HarnessUid,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const retireAgentTemplateHarnessPair = `-- name: RetireAgentTemplateHarnessPair :exec
@@ -228,21 +233,31 @@ const upsertRuntimeRevision = `-- name: UpsertRuntimeRevision :execrows
 INSERT INTO runtime_revision (
     revision, namespace, agent_template_name, agent_template_uid,
     harness_name, harness_uid, source_snapshot, agent_card, egress_destinations,
-    backend_kind, external_runtime,
+    backend_kind, external_runtime, external_profile,
     actor_template_namespace, actor_template_name, actor_template_uid,
     phase, golden_snapshot
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14, $15, $16
+    $9, $10, $11, $12, $13, $14, $15, $16, $17
 )
 ON CONFLICT (revision) DO UPDATE SET
-    agent_card = EXCLUDED.agent_card,
     actor_template_uid = EXCLUDED.actor_template_uid,
     phase = EXCLUDED.phase,
     golden_snapshot = EXCLUDED.golden_snapshot,
     updated_at = NOW()
-WHERE runtime_revision.backend_kind = EXCLUDED.backend_kind
-  AND COALESCE(runtime_revision.external_runtime, '') = COALESCE(EXCLUDED.external_runtime, '')
+WHERE runtime_revision.namespace = EXCLUDED.namespace
+  AND runtime_revision.agent_template_name = EXCLUDED.agent_template_name
+  AND runtime_revision.agent_template_uid = EXCLUDED.agent_template_uid
+  AND runtime_revision.harness_name = EXCLUDED.harness_name
+  AND runtime_revision.harness_uid = EXCLUDED.harness_uid
+  AND runtime_revision.source_snapshot = EXCLUDED.source_snapshot
+  AND runtime_revision.agent_card = EXCLUDED.agent_card
+  AND runtime_revision.egress_destinations = EXCLUDED.egress_destinations
+  AND runtime_revision.backend_kind = EXCLUDED.backend_kind
+  AND runtime_revision.external_runtime IS NOT DISTINCT FROM EXCLUDED.external_runtime
+  AND runtime_revision.external_profile IS NOT DISTINCT FROM EXCLUDED.external_profile
+  AND runtime_revision.actor_template_namespace IS NOT DISTINCT FROM EXCLUDED.actor_template_namespace
+  AND runtime_revision.actor_template_name IS NOT DISTINCT FROM EXCLUDED.actor_template_name
 `
 
 type UpsertRuntimeRevisionParams struct {
@@ -257,6 +272,7 @@ type UpsertRuntimeRevisionParams struct {
 	EgressDestinations     []string
 	BackendKind            string
 	ExternalRuntime        *string
+	ExternalProfile        []byte
 	ActorTemplateNamespace string
 	ActorTemplateName      string
 	ActorTemplateUid       string
@@ -277,6 +293,7 @@ func (q *Queries) UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRe
 		arg.EgressDestinations,
 		arg.BackendKind,
 		arg.ExternalRuntime,
+		arg.ExternalProfile,
 		arg.ActorTemplateNamespace,
 		arg.ActorTemplateName,
 		arg.ActorTemplateUid,

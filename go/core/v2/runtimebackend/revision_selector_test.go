@@ -27,17 +27,17 @@ func TestRevisionSelectorUsesOnlyPreparedRevisionIdentity(t *testing.T) {
 	}{
 		{
 			name:     "substrate",
-			revision: dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindSubstrate},
+			revision: validSubstrateRevision(),
 			want:     runtimebackend.KindSubstrate,
 		},
 		{
 			name:     "external codex",
-			revision: dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: dbpkg.ExternalRuntimeCodex},
+			revision: validExternalRevision(dbpkg.ExternalRuntimeCodex),
 			want:     runtimebackend.KindExternal,
 		},
 		{
 			name:     "external claude",
-			revision: dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: dbpkg.ExternalRuntimeClaude},
+			revision: validExternalRevision(dbpkg.ExternalRuntimeClaude),
 			want:     runtimebackend.KindExternal,
 		},
 	}
@@ -133,7 +133,8 @@ func TestRevisionSelectorValidatesDependenciesAndInput(t *testing.T) {
 	}
 
 	selector, err := runtimebackend.NewRevisionSelector(revisionStoreFunc(func(context.Context, string) (*dbpkg.RuntimeRevision, error) {
-		return &dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindSubstrate}, nil
+		revision := validSubstrateRevision()
+		return &revision, nil
 	}))
 	require.NoError(t, err)
 	_, err = selector.Select(t.Context(), nil)
@@ -142,4 +143,17 @@ func TestRevisionSelectorValidatesDependenciesAndInput(t *testing.T) {
 	require.ErrorContains(t, err, "failed to select persisted")
 	_, err = selector.Select(nil, &apiv1alpha1.AgentInstance{Id: "instance-1", PreparedRevision: "revision"})
 	require.ErrorContains(t, err, "requires a context")
+}
+
+func validSubstrateRevision() dbpkg.RuntimeRevision {
+	return dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindSubstrate, ActorTemplateNamespace: "team-a", ActorTemplateName: "actor",
+	}
+}
+
+func validExternalRevision(runtime dbpkg.ExternalRuntime) dbpkg.RuntimeRevision {
+	return dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: runtime,
+		ExternalProfile: []byte(`{"version":"v1","instruction":"","tools":[]}`), Phase: "Ready",
+	}
 }

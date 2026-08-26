@@ -8,26 +8,50 @@ import (
 )
 
 func TestRuntimeRevisionValidateBackendIdentity(t *testing.T) {
+	substrate := dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindSubstrate, ActorTemplateNamespace: "team-a", ActorTemplateName: "actor",
+	}
+	external := dbpkg.RuntimeRevision{
+		BackendKind: dbpkg.RuntimeBackendKindExternal, ExternalRuntime: dbpkg.ExternalRuntimeCodex,
+		ExternalProfile: []byte(`{"version":"v1"}`), Phase: "Ready",
+	}
 	tests := []struct {
-		name    string
-		kind    dbpkg.RuntimeBackendKind
-		runtime dbpkg.ExternalRuntime
-		wantErr string
+		name     string
+		revision dbpkg.RuntimeRevision
+		wantErr  string
 	}{
-		{name: "substrate", kind: dbpkg.RuntimeBackendKindSubstrate},
-		{name: "external codex", kind: dbpkg.RuntimeBackendKindExternal, runtime: dbpkg.ExternalRuntimeCodex},
-		{name: "external claude", kind: dbpkg.RuntimeBackendKindExternal, runtime: dbpkg.ExternalRuntimeClaude},
-		{name: "missing kind", wantErr: "backend kind is invalid"},
-		{name: "unknown kind", kind: dbpkg.RuntimeBackendKind("credential-shaped-unknown"), wantErr: "backend kind is invalid"},
-		{name: "substrate with runtime", kind: dbpkg.RuntimeBackendKindSubstrate, runtime: dbpkg.ExternalRuntimeCodex, wantErr: "must not select"},
-		{name: "external missing runtime", kind: dbpkg.RuntimeBackendKindExternal, wantErr: "supported runtime"},
-		{name: "external unknown runtime", kind: dbpkg.RuntimeBackendKindExternal, runtime: dbpkg.ExternalRuntime("credential-shaped-unknown"), wantErr: "supported runtime"},
+		{name: "substrate", revision: substrate},
+		{name: "external codex", revision: external},
+		{name: "external claude", revision: func() dbpkg.RuntimeRevision {
+			value := external
+			value.ExternalRuntime = dbpkg.ExternalRuntimeClaude
+			return value
+		}()},
+		{name: "missing kind", revision: dbpkg.RuntimeRevision{}, wantErr: "backend kind is invalid"},
+		{name: "unknown kind", revision: dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKind("credential-shaped-unknown")}, wantErr: "backend kind is invalid"},
+		{name: "substrate missing actor", revision: dbpkg.RuntimeRevision{BackendKind: dbpkg.RuntimeBackendKindSubstrate}, wantErr: "actor template identity"},
+		{name: "substrate with runtime", revision: func() dbpkg.RuntimeRevision {
+			value := substrate
+			value.ExternalRuntime = dbpkg.ExternalRuntimeCodex
+			return value
+		}(), wantErr: "must not select"},
+		{name: "substrate with profile", revision: func() dbpkg.RuntimeRevision { value := substrate; value.ExternalProfile = []byte(`{}`); return value }(), wantErr: "must not select"},
+		{name: "external missing runtime", revision: func() dbpkg.RuntimeRevision { value := external; value.ExternalRuntime = ""; return value }(), wantErr: "supported runtime"},
+		{name: "external unknown runtime", revision: func() dbpkg.RuntimeRevision {
+			value := external
+			value.ExternalRuntime = dbpkg.ExternalRuntime("credential-shaped-unknown")
+			return value
+		}(), wantErr: "supported runtime"},
+		{name: "external missing profile", revision: func() dbpkg.RuntimeRevision { value := external; value.ExternalProfile = nil; return value }(), wantErr: "JSON object profile"},
+		{name: "external array profile", revision: func() dbpkg.RuntimeRevision { value := external; value.ExternalProfile = []byte(`[]`); return value }(), wantErr: "JSON object profile"},
+		{name: "external with actor", revision: func() dbpkg.RuntimeRevision { value := external; value.ActorTemplateName = "actor"; return value }(), wantErr: "must not select an actor"},
+		{name: "external not ready", revision: func() dbpkg.RuntimeRevision { value := external; value.Phase = "Pending"; return value }(), wantErr: "must be ready"},
+		{name: "external with snapshot", revision: func() dbpkg.RuntimeRevision { value := external; value.GoldenSnapshot = "snapshot"; return value }(), wantErr: "without a golden snapshot"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			revision := dbpkg.RuntimeRevision{BackendKind: test.kind, ExternalRuntime: test.runtime}
-			err := revision.ValidateBackendIdentity()
+			err := test.revision.ValidateBackendIdentity()
 			if test.wantErr == "" {
 				require.NoError(t, err)
 				return
