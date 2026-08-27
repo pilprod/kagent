@@ -42,26 +42,29 @@ func (e *Engine) ListTools(ctx context.Context, capability, bindingID string) ([
 	}
 	found := make(map[string]*mcp.Tool, len(binding.Tools))
 	seenCursors := map[string]struct{}{"": {}}
-	cursor := ""
-	for pageNumber := 0; ; pageNumber++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if pageNumber >= maxUpstreamPages {
-			return nil, failed(ErrUpstream, "upstream tools pagination exceeded its page limit")
-		}
-		page, err := e.upstream.ListTools(ctx, authorization.target, cursor)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			return nil, failed(ErrUpstream, "list selected tools")
+	pageCount := 0
+	terminalPage := false
+	var pageErr error
+	listErr := e.upstream.ListTools(ctx, authorization.target, func(page ToolPage) error {
+		if pageErr != nil {
+			return pageErr
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			pageErr = ctxErr
+			return pageErr
 		}
+		if terminalPage {
+			pageErr = failed(ErrUpstream, "upstream returned a page after its terminal page")
+			return pageErr
+		}
+		if pageCount >= maxUpstreamPages {
+			pageErr = failed(ErrUpstream, "upstream tools pagination exceeded its page limit")
+			return pageErr
+		}
+		pageCount++
 		if len(page.Tools) > maxToolsPerPage {
-			return nil, failed(ErrUpstream, "upstream tools page exceeds its item limit")
+			pageErr = failed(ErrUpstream, "upstream tools page exceeds its item limit")
+			return pageErr
 		}
 		for _, candidate := range page.Tools {
 			if candidate == nil {
@@ -71,26 +74,43 @@ func (e *Engine) ListTools(ctx context.Context, capability, bindingID string) ([
 				continue
 			}
 			if _, duplicate := found[candidate.Name]; duplicate {
-				return nil, failed(ErrUpstream, "upstream returned a selected tool more than once")
+				pageErr = failed(ErrUpstream, "upstream returned a selected tool more than once")
+				return pageErr
 			}
 			tool, err := sanitizeTool(candidate)
 			if err != nil {
-				return nil, failed(ErrUpstream, "upstream returned an invalid selected tool")
+				pageErr = failed(ErrUpstream, "upstream returned an invalid selected tool")
+				return pageErr
 			}
 			found[candidate.Name] = tool
 		}
 
 		if page.NextCursor == "" {
-			break
+			terminalPage = true
+			return nil
 		}
 		if err := validateCursor(page.NextCursor); err != nil {
-			return nil, failed(ErrUpstream, "upstream returned an invalid pagination cursor")
+			pageErr = failed(ErrUpstream, "upstream returned an invalid pagination cursor")
+			return pageErr
 		}
 		if _, duplicate := seenCursors[page.NextCursor]; duplicate {
-			return nil, failed(ErrUpstream, "upstream tools pagination repeated a cursor")
+			pageErr = failed(ErrUpstream, "upstream tools pagination repeated a cursor")
+			return pageErr
 		}
 		seenCursors[page.NextCursor] = struct{}{}
-		cursor = page.NextCursor
+		return nil
+	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	if listErr != nil {
+		return nil, failed(ErrUpstream, "list selected tools")
+	}
+	if !terminalPage {
+		return nil, failed(ErrUpstream, "upstream tools pagination ended before a terminal page")
 	}
 
 	tools := make([]*mcp.Tool, 0, len(binding.Tools))

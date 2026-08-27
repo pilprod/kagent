@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/kagent-dev/kagent/go/api/v1alpha3"
 )
 
 const (
@@ -242,14 +244,10 @@ func newMCPPolicyBinding(subjectPath []string, agentNamespace string, resolved R
 	if err := validateMCPIdentifier("RemoteMCPServer UID", string(server.UID), maxMCPObjectIDBytes); err != nil {
 		return MCPPolicyBinding{}, err
 	}
-	spec, err := json.Marshal(server.Spec)
+	specHash, err := MCPServerSpecHash(server.Spec)
 	if err != nil {
-		return MCPPolicyBinding{}, NewValidationError("marshal RemoteMCPServer %q specification: %v", server.Name, err)
+		return MCPPolicyBinding{}, NewValidationError("hash RemoteMCPServer %q specification: %v", server.Name, err)
 	}
-	if len(spec) > maxMCPServerSpec {
-		return MCPPolicyBinding{}, NewValidationError("RemoteMCPServer %q specification exceeds %d bytes", server.Name, maxMCPServerSpec)
-	}
-	specHash := sha256.Sum256(spec)
 
 	tools := slices.Clone(resolved.Binding.Tools)
 	if len(tools) > maxMCPToolsPerBinding {
@@ -272,7 +270,7 @@ func newMCPPolicyBinding(subjectPath []string, agentNamespace string, resolved R
 			Namespace: server.Namespace,
 			Name:      server.Name,
 			UID:       string(server.UID),
-			SpecHash:  hex.EncodeToString(specHash[:]),
+			SpecHash:  specHash,
 		},
 		Tools: tools,
 	}
@@ -281,6 +279,21 @@ func newMCPPolicyBinding(subjectPath []string, agentNamespace string, resolved R
 		return MCPPolicyBinding{}, err
 	}
 	return binding, nil
+}
+
+// MCPServerSpecHash returns the private policy identity for one
+// RemoteMCPServer specification. Relay resolution must use this function so
+// compile-time and invocation-time pinning cannot drift apart.
+func MCPServerSpecHash(spec v1alpha3.RemoteMCPServerSpec) (string, error) {
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("marshal RemoteMCPServer specification: %w", err)
+	}
+	if len(raw) > maxMCPServerSpec {
+		return "", fmt.Errorf("RemoteMCPServer specification exceeds %d bytes", maxMCPServerSpec)
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func mcpBindingID(binding MCPPolicyBinding) (string, error) {

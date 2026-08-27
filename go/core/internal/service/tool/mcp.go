@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -29,6 +31,64 @@ type RuntimeMCPClient struct {
 
 func NewRuntimeMCPClient(kubeClient client.Client) *RuntimeMCPClient {
 	return &RuntimeMCPClient{kubeClient: kubeClient}
+}
+
+// ListRemoteTools lists every page through one session opened from an already
+// resolved RemoteMCPServer snapshot. The caller owns resource identity and
+// page validation; this method owns connection scope, cursor forwarding, and
+// the existing Secret resolution behavior.
+func (c *RuntimeMCPClient) ListRemoteTools(
+	ctx context.Context,
+	server *v1alpha3.RemoteMCPServer,
+	yield func(*mcp.ListToolsResult) error,
+) error {
+	if yield == nil {
+		return errors.New("RemoteMCPServer tools page callback is required")
+	}
+	session, cleanup, err := c.connectRemote(ctx, server)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	cursor := ""
+	for {
+		result, err := session.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
+		if err != nil {
+			return fmt.Errorf("failed to list RemoteMCPServer tools: %w", err)
+		}
+		if result == nil {
+			return errors.New("RemoteMCPServer returned an empty tools response")
+		}
+		if err := yield(result); err != nil {
+			return err
+		}
+		if result.NextCursor == "" {
+			return nil
+		}
+		cursor = result.NextCursor
+	}
+}
+
+// CallRemoteTool calls one tool through an already resolved RemoteMCPServer
+// snapshot. Arguments remain validated and bounded by the relay core.
+func (c *RuntimeMCPClient) CallRemoteTool(
+	ctx context.Context,
+	server *v1alpha3.RemoteMCPServer,
+	toolName string,
+	arguments json.RawMessage,
+) (*mcp.CallToolResult, error) {
+	session, cleanup, err := c.connectRemote(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: arguments})
+	if err != nil {
+		return nil, fmt.Errorf("failed to call RemoteMCPServer tool: %w", err)
+	}
+	return result, nil
 }
 
 func (c *RuntimeMCPClient) ListTools(ctx context.Context, ref MCPServerRef) ([]MCPAppTool, error) {
@@ -146,6 +206,16 @@ func (c *RuntimeMCPClient) connect(ctx context.Context, ref MCPServerRef) (*mcp.
 	server, err := c.ResolveServer(ctx, ref)
 	if err != nil {
 		return nil, nil, err
+	}
+	return c.connectRemote(ctx, server)
+}
+
+func (c *RuntimeMCPClient) connectRemote(
+	ctx context.Context,
+	server *v1alpha3.RemoteMCPServer,
+) (*mcp.ClientSession, func(), error) {
+	if server == nil {
+		return nil, nil, errors.New("RemoteMCPServer is required")
 	}
 	timeout := 30 * time.Second
 	if server.Spec.Timeout != nil && server.Spec.Timeout.Duration > 0 {
