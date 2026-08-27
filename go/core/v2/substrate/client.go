@@ -207,10 +207,13 @@ func (c *Client) DeleteActorSnapshotTag(ctx context.Context, atespace, name stri
 	return err
 }
 
-func (c *Client) DeleteActor(ctx context.Context, atespace, actorID string) error {
+func (c *Client) DeleteActor(ctx context.Context, atespace, actorID string, anyState bool) error {
 	ctx, cancel := c.callCtx(ctx)
 	defer cancel()
-	_, err := c.ControlClient.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: actorRef(atespace, actorID)})
+	_, err := c.ControlClient.DeleteActor(ctx, &ateapipb.DeleteActorRequest{
+		Actor:    actorRef(atespace, actorID),
+		AnyState: anyState,
+	})
 	return err
 }
 

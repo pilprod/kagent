@@ -31,7 +31,7 @@ type actorClient interface {
 	ResumeActor(context.Context, string, string) (*ateapipb.Actor, error)
 	SuspendActor(context.Context, string, string) (*ateapipb.Actor, error)
 	GetActorSnapshot(context.Context, string, string) (*ateapipb.ActorSnapshot, error)
-	DeleteActor(context.Context, string, string) error
+	DeleteActor(context.Context, string, string, bool) error
 }
 
 // ActorWorkflow runs the imperative Substrate operations behind AgentInstance
@@ -403,7 +403,7 @@ func (w *ActorWorkflow) Delete(ctx context.Context, instance *apiv1alpha1.AgentI
 			}
 		}
 	}
-	if err := w.actors.DeleteActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
+	if err := w.actors.DeleteActor(ctx, atespace, name, placement == dbpkg.RuntimeRevisionPlacementExternalSlot); err != nil && status.Code(err) != codes.NotFound {
 		return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("delete Actor %s/%s: %w", atespace, name, err))
 	}
 	return w.finishDelete(ctx, instance)

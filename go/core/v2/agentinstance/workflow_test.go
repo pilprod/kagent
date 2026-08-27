@@ -74,8 +74,8 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil || len(actors.actors) != 0 {
 		t.Fatalf("deleted instance = %+v, actors = %v", deleted, actors.actors)
 	}
-	if actors.suspendCalls != 2 || actors.deleteCalls != 1 {
-		t.Fatalf("KubernetesPod lifecycle suspend calls = %d, delete calls = %d", actors.suspendCalls, actors.deleteCalls)
+	if actors.suspendCalls != 2 || actors.deleteCalls != 1 || actors.deleteAnyState {
+		t.Fatalf("KubernetesPod lifecycle suspend calls = %d, delete calls = %d, any state = %t", actors.suspendCalls, actors.deleteCalls, actors.deleteAnyState)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestActorWorkflowExternalSlotDeleteSkipsSuspend(t *testing.T) {
 	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil {
 		t.Fatalf("deleted instance = %+v, stored = %+v", deleted, store.instance)
 	}
-	if actors.suspendCalls != 0 || actors.deleteCalls != 1 {
-		t.Fatalf("suspend calls = %d, delete calls = %d", actors.suspendCalls, actors.deleteCalls)
+	if actors.suspendCalls != 0 || actors.deleteCalls != 1 || !actors.deleteAnyState {
+		t.Fatalf("suspend calls = %d, delete calls = %d, any state = %t", actors.suspendCalls, actors.deleteCalls, actors.deleteAnyState)
 	}
 }
 
@@ -234,6 +234,7 @@ type lifecycleTestActors struct {
 	resumeCalls             int
 	createFromSnapshotCalls int
 	deleteCalls             int
+	deleteAnyState          bool
 }
 
 func actorKey(atespace, name string) string { return atespace + "/" + name }
@@ -300,8 +301,13 @@ func (a *lifecycleTestActors) GetActorSnapshot(_ context.Context, atespace, name
 	}, nil
 }
 
-func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string) error {
+func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string, anyState bool) error {
 	a.deleteCalls++
+	a.deleteAnyState = anyState
+	actor := a.actors[actorKey(atespace, name)]
+	if actor != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_RUNNING && !anyState {
+		return status.Error(codes.FailedPrecondition, "running actor requires any_state deletion")
+	}
 	delete(a.actors, actorKey(atespace, name))
 	return nil
 }
