@@ -45,6 +45,10 @@ type Revision struct {
 	// Provenance identifies every Kubernetes input to this revision. Secret
 	// values are represented only by hashes.
 	Provenance json.RawMessage
+	// MCPPolicy is private control-plane authorization data. It participates in
+	// the immutable revision identity but is never materialized into the Actor
+	// environment, agent card, or harness runtime configuration.
+	MCPPolicy MCPPolicyV1
 	// EgressDestinations is the hostname allowlist required by this revision.
 	EgressDestinations []string
 }
@@ -64,11 +68,13 @@ func (r *Revision) Digest() (RevisionID, error) {
 		WorkerPoolName     string          `json:"workerPoolName"`
 		SnapshotLocation   string          `json:"snapshotLocation"`
 		Provenance         json.RawMessage `json:"provenance"`
+		MCPPolicy          MCPPolicyV1     `json:"mcpPolicy"`
 		EgressDestinations []string        `json:"egressDestinations"`
 	}{
 		Namespace: r.Namespace, AgentTemplateName: r.AgentTemplateName, HarnessName: r.HarnessName,
 		Image: r.Image, Environment: r.Environment, ConfigJSON: r.ConfigJSON, AgentCardJSON: r.AgentCardJSON,
 		WorkerPoolName: r.WorkerPoolName, SnapshotLocation: r.SnapshotLocation, Provenance: r.Provenance,
+		MCPPolicy:          r.MCPPolicy,
 		EgressDestinations: r.EgressDestinations,
 	})
 	if err != nil {

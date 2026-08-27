@@ -23,3 +23,22 @@ func TestRevisionDigestIncludesProvenance(t *testing.T) {
 		t.Fatalf("short revision %q is not a prefix of %q", first.Short(), first.String())
 	}
 }
+
+func TestRevisionDigestIncludesPrivateMCPPolicy(t *testing.T) {
+	revision := &Revision{
+		Namespace: "agents", AgentTemplateName: "helper", HarnessName: "codex",
+		MCPPolicy: MCPPolicyV1{Version: MCPPolicyVersionV1, Bindings: []MCPPolicyBinding{}},
+	}
+	first, err := revision.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.MCPPolicy.Version = "changed"
+	second, err := revision.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("private MCP policy did not change runtime revision")
+	}
+}
