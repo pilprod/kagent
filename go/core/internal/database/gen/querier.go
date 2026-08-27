@@ -43,7 +43,10 @@ type Querier interface {
 	GetLatestCrewAIFlowState(ctx context.Context, arg GetLatestCrewAIFlowStateParams) (CrewaiFlowState, error)
 	GetLatestQuiescentAgentInstanceTask(ctx context.Context, contextID uuid.UUID) (AgentInstanceTask, error)
 	GetLatestRuntimeRevisionForInstance(ctx context.Context, arg GetLatestRuntimeRevisionForInstanceParams) (GetLatestRuntimeRevisionForInstanceRow, error)
+	GetMCPRelayGrant(ctx context.Context, capabilityHash []byte) (McpRelayGrant, error)
+	GetMCPRelayInstanceLifecycle(ctx context.Context, id string) (GetMCPRelayInstanceLifecycleRow, error)
 	GetRuntimeRevision(ctx context.Context, revision string) (RuntimeRevision, error)
+	GetRuntimeRevisionMCPPolicy(ctx context.Context, revision string) ([]byte, error)
 	GetTool(ctx context.Context, id string) (Tool, error)
 	GetToolServer(ctx context.Context, name string) (Toolserver, error)
 	HardDeleteCrewAIMemory(ctx context.Context, arg HardDeleteCrewAIMemoryParams) error
@@ -56,6 +59,7 @@ type Querier interface {
 	InsertCopiedAgentInstanceTask(ctx context.Context, arg InsertCopiedAgentInstanceTaskParams) error
 	InsertFeedback(ctx context.Context, arg InsertFeedbackParams) error
 	InsertForkedAgentInstance(ctx context.Context, arg InsertForkedAgentInstanceParams) (AgentInstance, error)
+	InsertMCPRelayGrant(ctx context.Context, arg InsertMCPRelayGrantParams) (McpRelayGrant, error)
 	InsertMemory(ctx context.Context, arg InsertMemoryParams) (string, error)
 	ListAgentInstanceCheckpointEvents(ctx context.Context, checkpointID uuid.UUID) ([]AgentInstanceTaskEvent, error)
 	ListAgentInstanceCheckpointTasks(ctx context.Context, checkpointID uuid.UUID) ([]AgentInstanceTask, error)
@@ -87,11 +91,13 @@ type Querier interface {
 	LockActiveAgentInstanceTask(ctx context.Context, contextID uuid.UUID) (AgentInstanceTask, error)
 	LockAgentInstance(ctx context.Context, id uuid.UUID) (AgentInstance, error)
 	LockReadyAgentInstanceCheckpoint(ctx context.Context, arg LockReadyAgentInstanceCheckpointParams) (AgentInstanceCheckpoint, error)
+	LockRuntimeRevisionMCPPolicy(ctx context.Context, revision string) ([]byte, error)
 	MarkAgentInstanceReady(ctx context.Context, arg MarkAgentInstanceReadyParams) (AgentInstance, error)
 	MarkRuntimeRevisionSuccessful(ctx context.Context, arg MarkRuntimeRevisionSuccessfulParams) error
 	RetireAgentTemplateHarnessPair(ctx context.Context, arg RetireAgentTemplateHarnessPairParams) error
 	RetireAgentTemplateHarnessPairs(ctx context.Context, arg RetireAgentTemplateHarnessPairsParams) error
 	RetireOtherAgentTemplateHarnessPairs(ctx context.Context, arg RetireOtherAgentTemplateHarnessPairsParams) error
+	RevokeMCPRelayGrant(ctx context.Context, arg RevokeMCPRelayGrantParams) (McpRelayGrant, error)
 	// Memory uses hard DELETE (not soft deletes), so no deleted_at filter is needed.
 	// COALESCE guards against NULL embeddings (score=0 rather than NULL); rows are still ordered last by the ORDER BY clause.
 	SearchAgentMemory(ctx context.Context, arg SearchAgentMemoryParams) ([]SearchAgentMemoryRow, error)
@@ -116,7 +122,10 @@ type Querier interface {
 	UpsertCheckpointWrite(ctx context.Context, arg UpsertCheckpointWriteParams) error
 	UpsertCrewAIFlowState(ctx context.Context, arg UpsertCrewAIFlowStateParams) error
 	UpsertCrewAIMemory(ctx context.Context, arg UpsertCrewAIMemoryParams) error
-	UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) error
+	// MCP policy participates in the revision digest and is immutable. JSONB
+	// equality is semantic, so harmless formatting differences do not create a
+	// false collision.
+	UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) (int64, error)
 	UpsertTool(ctx context.Context, arg UpsertToolParams) error
 	UpsertToolServer(ctx context.Context, arg UpsertToolServerParams) (Toolserver, error)
 }

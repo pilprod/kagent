@@ -113,16 +113,24 @@ func (c *postgresClient) UpsertAgentTemplateHarnessPair(ctx context.Context, pai
 }
 
 func (c *postgresClient) UpsertRuntimeRevision(ctx context.Context, revision dbpkg.RuntimeRevision) error {
-	if err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
+	policy, err := canonicalRuntimeRevisionMCPPolicy(revision.MCPPolicy)
+	if err != nil {
+		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	}
+	rows, err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
 		Revision: revision.Revision, Namespace: revision.Namespace,
 		AgentTemplateName: revision.AgentTemplateName, AgentTemplateUid: revision.AgentTemplateUID,
 		HarnessName: revision.HarnessName, HarnessUid: revision.HarnessUID,
-		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard,
+		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard, McpPolicy: policy,
 		EgressDestinations:     revision.EgressDestinations,
 		ActorTemplateNamespace: revision.ActorTemplateNamespace, ActorTemplateName: revision.ActorTemplateName,
 		ActorTemplateUid: revision.ActorTemplateUID, Phase: revision.Phase, GoldenSnapshot: revision.GoldenSnapshot,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, dbpkg.ErrRuntimeRevisionConflict)
 	}
 	return nil
 }
@@ -136,7 +144,7 @@ func (c *postgresClient) GetRuntimeRevision(ctx context.Context, revision string
 		Revision: row.Revision, Namespace: row.Namespace,
 		AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
 		HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
+		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard, MCPPolicy: row.McpPolicy,
 		EgressDestinations:     row.EgressDestinations,
 		ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
 		ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
@@ -176,7 +184,7 @@ func (c *postgresClient) ListUnreferencedRuntimeRevisions(ctx context.Context) (
 			Revision: row.Revision, Namespace: row.Namespace,
 			AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
 			HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-			SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
+			SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard, MCPPolicy: row.McpPolicy,
 			EgressDestinations:     row.EgressDestinations,
 			ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
 			ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
