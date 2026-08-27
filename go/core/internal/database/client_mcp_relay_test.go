@@ -232,8 +232,12 @@ type relayPersistenceUpstream struct {
 	calls int
 }
 
-func (u *relayPersistenceUpstream) ListTools(context.Context, mcprelay.UpstreamTarget, string) (mcprelay.ToolPage, error) {
-	return mcprelay.ToolPage{}, nil
+func (u *relayPersistenceUpstream) ListTools(
+	_ context.Context,
+	_ mcprelay.UpstreamTarget,
+	yield func(mcprelay.ToolPage) error,
+) error {
+	return yield(mcprelay.ToolPage{})
 }
 
 func (u *relayPersistenceUpstream) CallTool(
