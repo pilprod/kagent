@@ -121,9 +121,11 @@ func main() {
 	instanceWorkflow := agentinstance.NewActorWorkflow(store, actors)
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
-	gatewayDialer, err := a2agateway.NewRuntimeDialer(
+	gatewayDialer, err := a2agateway.NewProviderAwareRuntimeDialer(
 		env("SUBSTRATE_ATENET_ROUTER_URL", substrate.DefaultAtenetRouterURL),
 		authenticator,
+		store,
+		actors.ControlClient,
 	)
 	if err != nil {
 		log.Fatal(err)

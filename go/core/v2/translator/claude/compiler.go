@@ -6,7 +6,7 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/translator/codingagent"
 )
 
-// NewCompiler constructs the compile-only Claude adapter.
+// NewCompiler constructs the Claude ExternalSlot adapter.
 func NewCompiler(kube translator.Reader) *codingagent.Compiler {
 	return codingagent.NewCompiler(codingagent.RuntimeClaude, kube)
 }

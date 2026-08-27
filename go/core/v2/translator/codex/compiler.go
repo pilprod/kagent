@@ -6,7 +6,7 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/translator/codingagent"
 )
 
-// NewCompiler constructs the compile-only Codex adapter.
+// NewCompiler constructs the Codex ExternalSlot adapter.
 func NewCompiler(kube translator.Reader) *codingagent.Compiler {
 	return codingagent.NewCompiler(codingagent.RuntimeCodex, kube)
 }

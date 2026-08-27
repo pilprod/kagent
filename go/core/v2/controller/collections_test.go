@@ -6,6 +6,7 @@ import (
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
+	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
 	"istio.io/istio/pkg/kube/krt"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -119,13 +120,14 @@ func TestReconciliationCollectionsCompileAndObserveRevision(t *testing.T) {
 	})
 }
 
-func TestReconciliationCodingHarnessFailsClosedUntilActorIngress(t *testing.T) {
+func TestReconciliationCodingHarnessUsesExternalActorIngress(t *testing.T) {
 	for _, test := range []struct {
 		name      string
+		provider  kagentv1alpha3.ModelProvider
 		configure func(*kagentv1alpha3.Harness)
 	}{
-		{name: "codex", configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Codex = &kagentv1alpha3.CodexHarness{} }},
-		{name: "claude", configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Claude = &kagentv1alpha3.ClaudeHarness{} }},
+		{name: "codex", provider: kagentv1alpha3.ModelProviderOpenAI, configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Codex = &kagentv1alpha3.CodexHarness{} }},
+		{name: "claude", provider: kagentv1alpha3.ModelProviderAnthropic, configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Claude = &kagentv1alpha3.ClaudeHarness{} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stop := make(chan struct{})
@@ -150,7 +152,7 @@ func TestReconciliationCodingHarnessFailsClosedUntilActorIngress(t *testing.T) {
 				templates,
 				krt.NewStaticCollection(nil, []*kagentv1alpha3.ModelConfig{{
 					ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "model"},
-					Spec:       kagentv1alpha3.ModelConfigSpec{Provider: kagentv1alpha3.ModelProviderOpenAI, Model: "gpt-5"},
+					Spec:       kagentv1alpha3.ModelConfigSpec{Provider: test.provider, Model: "model"},
 				}}, opts.WithName("ModelConfigs")...),
 				krt.NewStaticCollection[*kagentv1alpha3.RemoteMCPServer](nil, nil, opts.WithName("RemoteMCPServers")...),
 				krt.NewStaticCollection[*corev1.ConfigMap](nil, nil, opts.WithName("ConfigMaps")...),
@@ -161,12 +163,14 @@ func TestReconciliationCodingHarnessFailsClosedUntilActorIngress(t *testing.T) {
 			)
 			waitFor(t, func() bool { return len(reconciliations.List()) == 1 })
 			state := reconciliations.List()[0]
-			if state.Failure == nil || state.Failure.Condition != kagentv1alpha3.AgentTemplateConditionCompatible ||
-				state.Failure.Reason != "UnsupportedConfiguration" || state.Failure.Message != "Harness runtime is not supported by any compiler" {
-				t.Fatalf("coding Harness fail-closed status = %+v", state.Failure)
+			if state.Failure != nil {
+				t.Fatalf("coding Harness reconciliation failed: %+v", state.Failure)
 			}
-			if state.Revision != nil || state.DesiredActorTemplate != nil {
-				t.Fatalf("disabled coding Harness produced runtime state: revision=%+v ActorTemplate=%+v", state.Revision, state.DesiredActorTemplate)
+			if state.Revision == nil || state.Revision.Placement != v2translator.RevisionPlacementExternalSlot || state.DesiredActorTemplate == nil {
+				t.Fatalf("coding Harness runtime state = revision=%+v ActorTemplate=%+v", state.Revision, state.DesiredActorTemplate)
+			}
+			if spec := state.DesiredActorTemplate.Spec; spec.WorkerProvider != atev1alpha1.WorkerProviderExternalSlot || spec.WorkerSelector != nil || len(spec.Volumes) != 0 || spec.SnapshotsConfig.Location != "" {
+				t.Fatalf("coding Harness ActorTemplate is not ExternalSlot-only: %+v", spec)
 			}
 		})
 	}

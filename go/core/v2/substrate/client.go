@@ -179,13 +179,13 @@ func (c *Client) SuspendActor(ctx context.Context, atespace, actorID string) (*a
 func (c *Client) GetActorSnapshot(ctx context.Context, atespace, name string) (*ateapipb.ActorSnapshot, error) {
 	ctx, cancel := c.callCtx(ctx)
 	defer cancel()
-	return c.ControlClient.GetActorSnapshot(ctx, &ateapipb.GetActorSnapshotRequest{Snapshot: actorRef(atespace, name)})
+	return c.ControlClient.GetActorSnapshot(ctx, &ateapipb.GetActorSnapshotRequest{ActorSnapshot: actorRef(atespace, name)})
 }
 
 func (c *Client) GetActorSnapshotTag(ctx context.Context, atespace, name string) (*ateapipb.ActorSnapshotTag, error) {
 	ctx, cancel := c.callCtx(ctx)
 	defer cancel()
-	return c.ControlClient.GetActorSnapshotTag(ctx, &ateapipb.GetActorSnapshotTagRequest{Tag: actorRef(atespace, name)})
+	return c.ControlClient.GetActorSnapshotTag(ctx, &ateapipb.GetActorSnapshotTagRequest{ActorSnapshotTag: actorRef(atespace, name)})
 }
 
 func (c *Client) CreateActorSnapshotTag(ctx context.Context, atespace, name, snapshotName string) (*ateapipb.ActorSnapshotTag, error) {
@@ -203,7 +203,7 @@ func (c *Client) CreateActorSnapshotTag(ctx context.Context, atespace, name, sna
 func (c *Client) DeleteActorSnapshotTag(ctx context.Context, atespace, name string) error {
 	ctx, cancel := c.callCtx(ctx)
 	defer cancel()
-	_, err := c.ControlClient.DeleteActorSnapshotTag(ctx, &ateapipb.DeleteActorSnapshotTagRequest{Tag: actorRef(atespace, name)})
+	_, err := c.ControlClient.DeleteActorSnapshotTag(ctx, &ateapipb.DeleteActorSnapshotTagRequest{ActorSnapshotTag: actorRef(atespace, name)})
 	return err
 }
 
