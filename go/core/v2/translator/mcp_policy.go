@@ -1,10 +1,12 @@
 package translator
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"unicode"
@@ -23,6 +25,8 @@ const (
 	maxMCPPolicyBindings  = 2550
 	maxMCPToolsPerBinding = 50
 	maxMCPSubjectDepth    = 2
+	maxMCPPolicyJSONBytes = 32 << 20
+	maxMCPPolicyJSONDepth = 16
 )
 
 // MCPPolicyV1 is the private, immutable MCP authorization policy compiled for
@@ -57,6 +61,116 @@ type mcpBindingIdentity struct {
 	SubjectPath []string          `json:"subjectPath"`
 	Server      MCPServerIdentity `json:"server"`
 	Tools       []string          `json:"tools"`
+}
+
+// DecodeMCPPolicyV1 strictly decodes persisted private policy. It rejects
+// duplicate and unknown fields, trailing values, excessive size/depth, and
+// every non-canonical semantic form rejected by Validate.
+func DecodeMCPPolicyV1(raw []byte) (MCPPolicyV1, error) {
+	if len(raw) == 0 {
+		return MCPPolicyV1{}, fmt.Errorf("MCP policy is empty")
+	}
+	if len(raw) > maxMCPPolicyJSONBytes {
+		return MCPPolicyV1{}, fmt.Errorf("MCP policy exceeds %d bytes", maxMCPPolicyJSONBytes)
+	}
+	if err := validateMCPPolicyJSON(raw, maxMCPPolicyJSONDepth); err != nil {
+		return MCPPolicyV1{}, fmt.Errorf("validate MCP policy JSON: %w", err)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var policy MCPPolicyV1
+	if err := decoder.Decode(&policy); err != nil {
+		return MCPPolicyV1{}, fmt.Errorf("decode MCP policy: %w", err)
+	}
+	if err := policy.Validate(); err != nil {
+		return MCPPolicyV1{}, err
+	}
+	return policy, nil
+}
+
+// CanonicalMCPPolicyJSON returns the unique JSON representation used at the
+// database boundary after strict decoding and semantic validation.
+func CanonicalMCPPolicyJSON(raw []byte) ([]byte, error) {
+	policy, err := DecodeMCPPolicyV1(raw)
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		return nil, fmt.Errorf("marshal canonical MCP policy: %w", err)
+	}
+	return canonical, nil
+}
+
+func validateMCPPolicyJSON(raw []byte, maxDepth int) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := consumeMCPPolicyJSONValue(decoder, 0, maxDepth); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("JSON contains trailing data")
+		}
+		return fmt.Errorf("read trailing JSON data: %w", err)
+	}
+	return nil
+}
+
+func consumeMCPPolicyJSONValue(decoder *json.Decoder, depth, maxDepth int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("JSON nesting exceeds %d levels", maxDepth)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("decode JSON: %w", err)
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("decode JSON object key: %w", err)
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("JSON object contains a duplicate key")
+			}
+			seen[key] = struct{}{}
+			if err := consumeMCPPolicyJSONValue(decoder, depth+1, maxDepth); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeMCPPolicyJSONValue(decoder, depth+1, maxDepth); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("decode JSON closing delimiter: %w", err)
+	}
+	want := json.Delim('}')
+	if delimiter == '[' {
+		want = ']'
+	}
+	if closing != want {
+		return fmt.Errorf("unexpected JSON closing delimiter %q", closing)
+	}
+	return nil
 }
 
 func buildMCPPolicy(input *HarnessInput) (MCPPolicyV1, error) {

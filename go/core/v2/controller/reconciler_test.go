@@ -20,7 +20,10 @@ func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	template := &kagentv1alpha3.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant", UID: "template-uid"}}
 	harness := &kagentv1alpha3.Harness{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "kagent", UID: "harness-uid"}}
 	desiredActor := &atev1alpha1.ActorTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant-kagent-revision"}}
-	revision := &v2translator.Revision{}
+	revision := &v2translator.Revision{MCPPolicy: v2translator.MCPPolicyV1{
+		Version:  v2translator.MCPPolicyVersionV1,
+		Bindings: []v2translator.MCPPolicyBinding{},
+	}}
 	revisionID, err := revision.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +78,9 @@ func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	}
 	if store.revision == nil || !store.markedSuccessful {
 		t.Fatal("ready revision was not stored and marked successful")
+	}
+	if string(store.revision.MCPPolicy) != `{"version":"v1","bindings":[]}` {
+		t.Fatalf("persisted MCP policy = %s", store.revision.MCPPolicy)
 	}
 
 	if err := reconciler.reconcileStatus(context.Background(), "team-a/assistant"); err != nil {

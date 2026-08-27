@@ -45,6 +45,7 @@ type Grant struct {
 type InstanceState string
 
 const (
+	InstanceStateCreating  InstanceState = "CREATING"
 	InstanceStateReady     InstanceState = "READY"
 	InstanceStateSuspended InstanceState = "SUSPENDED"
 	InstanceStateFailed    InstanceState = "FAILED"

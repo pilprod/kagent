@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -246,10 +247,14 @@ func (r *Reconciler) reconcilePair(ctx context.Context, key string) error {
 	}
 
 	observed := state.ObservedActorTemplate
+	policy, err := json.Marshal(state.Revision.MCPPolicy)
+	if err != nil {
+		return fmt.Errorf("encode runtime revision MCP policy %s: %w", state.RevisionID, err)
+	}
 	revision := dbpkg.RuntimeRevision{
 		Revision: state.RevisionID.String(), Namespace: pair.Namespace, AgentTemplateName: pair.AgentTemplateName,
 		AgentTemplateUID: pair.AgentTemplateUID, HarnessName: pair.HarnessName, HarnessUID: pair.HarnessUID,
-		SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON,
+		SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON, MCPPolicy: policy,
 		EgressDestinations:     state.Revision.EgressDestinations,
 		ActorTemplateNamespace: observed.Namespace, ActorTemplateName: observed.Name, ActorTemplateUID: string(observed.UID),
 		Phase: string(observed.Status.Phase), GoldenSnapshot: observed.Status.GoldenSnapshot,
