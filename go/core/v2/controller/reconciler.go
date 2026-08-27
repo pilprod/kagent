@@ -14,6 +14,8 @@ import (
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"github.com/kagent-dev/kagent/go/core/v2/substrate"
 	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
+	claudetranslator "github.com/kagent-dev/kagent/go/core/v2/translator/claude"
+	codextranslator "github.com/kagent-dev/kagent/go/core/v2/translator/codex"
 	kagenttranslator "github.com/kagent-dev/kagent/go/core/v2/translator/kagent"
 	"istio.io/istio/pkg/kube/controllers"
 	"istio.io/istio/pkg/kube/krt"
@@ -66,6 +68,8 @@ func newPairReconciliations(
 		}
 		revision, err := v2translator.NewCompiler(reader, map[v2translator.HarnessType]v2translator.HarnessCompiler{
 			v2translator.HarnessTypeKagent: kagenttranslator.NewCompiler(reader),
+			v2translator.HarnessTypeCodex:  codextranslator.NewCompiler(reader),
+			v2translator.HarnessTypeClaude: claudetranslator.NewCompiler(reader),
 		}).CompileAgentTemplate(context.Background(), pair.Harness, pair.AgentTemplate)
 		if err != nil {
 			condition, reason := kagentv1alpha3.AgentTemplateConditionResolvedRefs, "ReferenceResolutionFailed"
@@ -83,11 +87,13 @@ func newPairReconciliations(
 			return state
 		}
 
-		workerPool := &atev1alpha1.WorkerPool{}
-		workerKey := types.NamespacedName{Namespace: revision.Namespace, Name: revision.WorkerPoolName}
-		if err := reader.Get(context.Background(), workerKey, workerPool); err != nil {
-			state.Failure = &ReconciliationFailure{Condition: kagentv1alpha3.AgentTemplateConditionResolvedRefs, Reason: "WorkerPoolNotFound", Message: err.Error()}
-			return state
+		if revision.Placement == v2translator.RevisionPlacementKubernetesPod {
+			workerPool := &atev1alpha1.WorkerPool{}
+			workerKey := types.NamespacedName{Namespace: revision.Namespace, Name: revision.WorkerPoolName}
+			if err := reader.Get(context.Background(), workerKey, workerPool); err != nil {
+				state.Failure = &ReconciliationFailure{Condition: kagentv1alpha3.AgentTemplateConditionResolvedRefs, Reason: "WorkerPoolNotFound", Message: err.Error()}
+				return state
+			}
 		}
 		state.DesiredActorTemplate, err = substrate.ActorTemplateForRevision(revision, state.RevisionID)
 		if err != nil {

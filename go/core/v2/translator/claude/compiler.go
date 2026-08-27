@@ -1,5 +1,4 @@
-// Package claude exposes the Claude Harness compiler. The controller must not
-// register it until a pinned runtime image passes the Harness conformance suite.
+// Package claude exposes the Claude Harness compiler for ExternalSlot revisions.
 package claude
 
 import (

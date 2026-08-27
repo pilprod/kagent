@@ -76,6 +76,24 @@ func TestConfigurationCRDValidation(t *testing.T) {
 			wantReject: "spec.workload.image",
 		},
 		{
+			name: "kagent Harness requires Substrate policy",
+			object: &Harness{ObjectMeta: metav1.ObjectMeta{Name: "harness-no-substrate", Namespace: namespace}, Spec: HarnessSpec{
+				Kagent: &KagentHarness{}, Workload: HarnessWorkload{Image: "registry.example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			}},
+			wantReject: "substrate is required for kagent and forbidden for codex or claude",
+		},
+		{
+			name: "coding Harness forbids Kubernetes Substrate policy",
+			object: validHarness(namespace, "codex-with-substrate", HarnessSpec{
+				Codex: &CodexHarness{},
+				Substrate: &HarnessSubstratePolicy{
+					WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+					SnapshotPolicy: HarnessSnapshotPolicy{Location: "gs://snapshots/kagent"},
+				},
+			}),
+			wantReject: "substrate is required for kagent and forbidden for codex or claude",
+		},
+		{
 			name: "Harness env requires a value source",
 			object: validHarness(namespace, "harness-empty-env", HarnessSpec{
 				Kagent: &KagentHarness{},
@@ -142,11 +160,11 @@ func validHarness(namespace, name string, overrides HarnessSpec) *Harness {
 	if overrides.Workload.Image == "" {
 		overrides.Workload.Image = "registry.example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	}
-	if overrides.Substrate.WorkerPoolRef.Name == "" {
-		overrides.Substrate.WorkerPoolRef.Name = "default"
-	}
-	if overrides.Substrate.SnapshotPolicy.Location == "" {
-		overrides.Substrate.SnapshotPolicy.Location = "gs://snapshots/kagent"
+	if overrides.Kagent != nil && overrides.Substrate == nil {
+		overrides.Substrate = &HarnessSubstratePolicy{
+			WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+			SnapshotPolicy: HarnessSnapshotPolicy{Location: "gs://snapshots/kagent"},
+		}
 	}
 	return &Harness{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: overrides}
 }

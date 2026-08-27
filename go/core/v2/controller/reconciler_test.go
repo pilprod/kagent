@@ -20,7 +20,7 @@ func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	template := &kagentv1alpha3.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant", UID: "template-uid"}}
 	harness := &kagentv1alpha3.Harness{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "kagent", UID: "harness-uid"}}
 	desiredActor := &atev1alpha1.ActorTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant-kagent-revision"}}
-	revision := &v2translator.Revision{MCPPolicy: v2translator.MCPPolicyV1{
+	revision := &v2translator.Revision{Placement: v2translator.RevisionPlacementKubernetesPod, MCPPolicy: v2translator.MCPPolicyV1{
 		Version:  v2translator.MCPPolicyVersionV1,
 		Bindings: []v2translator.MCPPolicyBinding{},
 	}}

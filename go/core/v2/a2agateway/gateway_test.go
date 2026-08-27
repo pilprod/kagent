@@ -695,7 +695,7 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 			AgentCard: []byte(`{
 				"name":"assistant","description":"pinned description","version":"v1",
 				"supportedInterfaces":[{"url":"http://127.0.0.1:80","protocolBinding":"GRPC","protocolVersion":"1.0"}],
-				"capabilities":{"pushNotifications":true,"extensions":[{"uri":"https://kagent.dev/extensions/hitl/v1","required":false}]},"skills":[],
+				"capabilities":{"streaming":true,"pushNotifications":true,"extensions":[{"uri":"https://kagent.dev/extensions/hitl/v1","required":false}]},"skills":[],
 				"defaultInputModes":["text"],"defaultOutputModes":["text"]
 			}`),
 		},
@@ -718,15 +718,37 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 	if !card.Capabilities.Streaming || !card.Capabilities.ExtendedAgentCard || card.Capabilities.PushNotifications {
 		t.Fatalf("gateway capabilities = %#v", card.Capabilities)
 	}
-	// Transport and streaming are the gateway's to state, but extensions describe
-	// what the runtime can negotiate. Replacing the whole struct used to drop them,
-	// which left a client no way to discover that an agent's question is answerable
-	// while the card still looked complete.
+	// Streaming and extensions describe what the runtime can negotiate. Replacing
+	// the whole struct used to drop extensions, which left a client no way to
+	// discover that an agent's question is answerable while the card still looked
+	// complete.
 	if len(card.Capabilities.Extensions) != 1 || card.Capabilities.Extensions[0].URI != "https://kagent.dev/extensions/hitl/v1" {
 		t.Fatalf("runtime extensions = %#v, want the runtime's own preserved", card.Capabilities.Extensions)
 	}
 	if authorizer.verb != auth.VerbGet || dialer.instance != nil {
 		t.Fatalf("authorization verb = %q, runtime dialed = %v", authorizer.verb, dialer.instance != nil)
+	}
+}
+
+func TestGatewayDoesNotAdvertiseUnsupportedRuntimeStreaming(t *testing.T) {
+	store := &gatewayTestStore{
+		instance: gatewayTestInstance(),
+		revision: &dbpkg.RuntimeRevision{
+			Revision: "coding-revision",
+			AgentCard: []byte(`{
+				"name":"codex","version":"v1",
+				"supportedInterfaces":[{"url":"http://127.0.0.1:80","protocolBinding":"GRPC","protocolVersion":"1.0"}],
+				"capabilities":{},"skills":[],"defaultInputModes":["text"],"defaultOutputModes":["text"]
+			}`),
+		},
+	}
+	card, err := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{}, &gatewayTestWorkflow{}, gatewayTestURL).
+		GetExtendedAgentCard(gatewayTestContext(), &a2atype.GetExtendedAgentCardRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Capabilities.Streaming || !card.Capabilities.ExtendedAgentCard {
+		t.Fatalf("gateway capabilities = %#v", card.Capabilities)
 	}
 }
 

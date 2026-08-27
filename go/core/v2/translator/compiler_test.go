@@ -36,7 +36,7 @@ func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 			Kagent:                &v1alpha3.KagentHarness{},
 			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
 			Workload:              v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
 				WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 			},
 		},
@@ -118,7 +118,7 @@ type testHarnessCompiler struct{ input *v2translator.HarnessInput }
 
 func (c *testHarnessCompiler) Compile(_ context.Context, input *v2translator.HarnessInput) (*v2translator.Revision, error) {
 	c.input = input
-	return &v2translator.Revision{AgentTemplateName: input.Root.Template.Name}, nil
+	return &v2translator.Revision{AgentTemplateName: input.Root.Template.Name, Placement: v2translator.RevisionPlacementExternalSlot}, nil
 }
 
 func TestCompilerAcceptsExternalHarnessCompiler(t *testing.T) {
@@ -305,7 +305,7 @@ func TestCompileAgentTemplateResolvesCredentialsForSubstrate(t *testing.T) {
 			Kagent:                &v1alpha3.KagentHarness{},
 			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
 			Workload:              v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
 				WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
 				SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 			},
@@ -361,7 +361,7 @@ func TestCompileAgentTemplateSharedAgent(t *testing.T) {
 		Spec: v1alpha3.HarnessSpec{
 			Kagent: &v1alpha3.KagentHarness{}, AllowedAgentTemplates: selector,
 			Workload:  v1alpha3.HarnessWorkload{Image: "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-			Substrate: v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
 		},
 	}
 	child := &v1alpha3.AgentTemplate{

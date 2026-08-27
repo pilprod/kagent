@@ -11,6 +11,26 @@ import (
 
 const shortRevisionBytes = 6
 
+// RevisionPlacement is the internal execution-capacity boundary selected by a
+// Harness compiler. It is intentionally not part of the public Harness API:
+// users select a runtime, and the compiler owns its compatible placement.
+type RevisionPlacement string
+
+const (
+	RevisionPlacementKubernetesPod RevisionPlacement = "KubernetesPod"
+	RevisionPlacementExternalSlot  RevisionPlacement = "ExternalSlot"
+)
+
+// Validate rejects revisions that did not make an explicit placement choice.
+func (p RevisionPlacement) Validate() error {
+	switch p {
+	case RevisionPlacementKubernetesPod, RevisionPlacementExternalSlot:
+		return nil
+	default:
+		return fmt.Errorf("unsupported runtime revision placement %q", p)
+	}
+}
+
 // RevisionID is the SHA-256 identity of a compiled runtime revision. Keeping
 // the digest as a fixed-size value makes invalid lengths unrepresentable.
 type RevisionID [sha256.Size]byte
@@ -38,6 +58,11 @@ type Revision struct {
 	ConfigJSON    []byte
 	AgentCardJSON []byte
 
+	// Placement selects the internal Substrate worker provider. Harness
+	// compilers set it; it is never copied from user-authored generic provider
+	// configuration.
+	Placement RevisionPlacement
+
 	// WorkerPoolName and SnapshotLocation control Substrate placement and state.
 	WorkerPoolName   string
 	SnapshotLocation string
@@ -57,22 +82,30 @@ type Revision struct {
 // behavior. The full digest is the database key; Kubernetes names use a short
 // prefix only for readability.
 func (r *Revision) Digest() (RevisionID, error) {
+	if r == nil {
+		return RevisionID{}, fmt.Errorf("runtime revision is required")
+	}
+	if err := r.Placement.Validate(); err != nil {
+		return RevisionID{}, err
+	}
 	raw, err := json.Marshal(struct {
-		Namespace          string          `json:"namespace"`
-		AgentTemplateName  string          `json:"agentTemplateName"`
-		HarnessName        string          `json:"harnessName"`
-		Image              string          `json:"image"`
-		Environment        []corev1.EnvVar `json:"environment"`
-		ConfigJSON         json.RawMessage `json:"config"`
-		AgentCardJSON      json.RawMessage `json:"agentCard"`
-		WorkerPoolName     string          `json:"workerPoolName"`
-		SnapshotLocation   string          `json:"snapshotLocation"`
-		Provenance         json.RawMessage `json:"provenance"`
-		MCPPolicy          MCPPolicyV1     `json:"mcpPolicy"`
-		EgressDestinations []string        `json:"egressDestinations"`
+		Namespace          string            `json:"namespace"`
+		AgentTemplateName  string            `json:"agentTemplateName"`
+		HarnessName        string            `json:"harnessName"`
+		Image              string            `json:"image"`
+		Environment        []corev1.EnvVar   `json:"environment"`
+		ConfigJSON         json.RawMessage   `json:"config"`
+		AgentCardJSON      json.RawMessage   `json:"agentCard"`
+		Placement          RevisionPlacement `json:"placement"`
+		WorkerPoolName     string            `json:"workerPoolName"`
+		SnapshotLocation   string            `json:"snapshotLocation"`
+		Provenance         json.RawMessage   `json:"provenance"`
+		MCPPolicy          MCPPolicyV1       `json:"mcpPolicy"`
+		EgressDestinations []string          `json:"egressDestinations"`
 	}{
 		Namespace: r.Namespace, AgentTemplateName: r.AgentTemplateName, HarnessName: r.HarnessName,
 		Image: r.Image, Environment: r.Environment, ConfigJSON: r.ConfigJSON, AgentCardJSON: r.AgentCardJSON,
+		Placement:      r.Placement,
 		WorkerPoolName: r.WorkerPoolName, SnapshotLocation: r.SnapshotLocation, Provenance: r.Provenance,
 		MCPPolicy:          r.MCPPolicy,
 		EgressDestinations: r.EgressDestinations,

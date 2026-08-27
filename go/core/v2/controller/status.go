@@ -9,6 +9,7 @@ import (
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
+	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
 	"istio.io/istio/pkg/kube/krt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -58,11 +59,19 @@ func statusForPair(state PairReconciliation, generation int64, latestSuccessful 
 	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionResolvedRefs, metav1.ConditionTrue, "Resolved", "All runtime references resolved")
 	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionCompatible, metav1.ConditionTrue, "Compatible", "Resolved configuration is compatible with the Harness")
 	if state.ObservedActorTemplate == nil || state.ObservedActorTemplate.Status.Phase != atev1alpha1.PhaseReady {
-		setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionFalse, "ActorTemplatePending", "waiting for the ActorTemplate golden snapshot")
+		message := "waiting for the ActorTemplate to become ready"
+		if state.Revision.Placement == v2translator.RevisionPlacementKubernetesPod {
+			message = "waiting for the ActorTemplate golden snapshot"
+		}
+		setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionFalse, "ActorTemplatePending", message)
 		return status
 	}
 	status.LatestSuccessfulRevision = state.RevisionID.String()
-	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionTrue, "Ready", "ActorTemplate golden snapshot is ready")
+	message := "ActorTemplate is ready"
+	if state.Revision.Placement == v2translator.RevisionPlacementKubernetesPod {
+		message = "ActorTemplate golden snapshot is ready"
+	}
+	setPairCondition(&status, generation, kagentv1alpha3.AgentTemplateConditionReady, metav1.ConditionTrue, "Ready", message)
 	return status
 }
 

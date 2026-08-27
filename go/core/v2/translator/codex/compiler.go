@@ -1,5 +1,4 @@
-// Package codex exposes the Codex Harness compiler. The controller must not
-// register it until a pinned runtime image passes the Harness conformance suite.
+// Package codex exposes the Codex Harness compiler for ExternalSlot revisions.
 package codex
 
 import (

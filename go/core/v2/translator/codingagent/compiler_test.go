@@ -87,8 +87,10 @@ func TestCodexAndClaudeCompilersRenderPortableResolvedBundle(t *testing.T) {
 				require.NotContains(t, string(revision.Provenance), forbidden)
 			}
 			require.Equal(t, testImage, revision.Image)
-			require.Equal(t, "workers", revision.WorkerPoolName)
-			require.Equal(t, "snapshots", revision.SnapshotLocation)
+			require.Equal(t, translator.RevisionPlacementExternalSlot, revision.Placement)
+			require.Empty(t, revision.WorkerPoolName)
+			require.Empty(t, revision.SnapshotLocation)
+			require.NotContains(t, string(revision.AgentCardJSON), `"streaming":true`)
 		})
 	}
 }
@@ -149,9 +151,6 @@ func compileFixture(t *testing.T, selectedRuntime codingagent.Runtime, provider 
 		Spec: v1alpha3.HarnessSpec{
 			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{MatchLabels: map[string]string{"runtime": "coding"}}},
 			Workload:              v1alpha3.HarnessWorkload{Image: testImage},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
-				WorkerPoolRef: corev1.LocalObjectReference{Name: "workers"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
-			},
 		},
 	}
 	objects := []client.Object{rootModel, childModel, server, child}
@@ -175,7 +174,6 @@ func TestCodingAgentCompilersFailClosedOnUnauthorizedInputs(t *testing.T) {
 		compiler := codex.NewCompiler(nil)
 		harness := &v1alpha3.Harness{ObjectMeta: metav1.ObjectMeta{Name: "codex", Namespace: "test"}, Spec: v1alpha3.HarnessSpec{
 			Codex: &v1alpha3.CodexHarness{}, Workload: v1alpha3.HarnessWorkload{Image: testImage},
-			Substrate: v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "workers"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
 		}}
 		model := &v1alpha3.ModelConfig{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "test"}, Spec: v1alpha3.ModelConfigSpec{
 			Provider: v1alpha3.ModelProviderOpenAI, Model: "gpt-5",
@@ -198,6 +196,17 @@ func TestCodingAgentCompilersFailClosedOnUnauthorizedInputs(t *testing.T) {
 		revision, err := compiler.Compile(context.Background(), input)
 		require.Nil(t, revision)
 		require.ErrorContains(t, err, "does not support environment variables")
+	})
+
+	t.Run("Kubernetes Substrate policy", func(t *testing.T) {
+		compiler, input := base()
+		input.Harness.Spec.Substrate = &v1alpha3.HarnessSubstratePolicy{
+			WorkerPoolRef:  corev1.LocalObjectReference{Name: "workers"},
+			SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
+		}
+		revision, err := compiler.Compile(context.Background(), input)
+		require.Nil(t, revision)
+		require.ErrorContains(t, err, "does not accept Kubernetes Substrate policy")
 	})
 
 	t.Run("ModelConfig secret", func(t *testing.T) {
@@ -339,9 +348,6 @@ func compileMinimalCodex(t *testing.T, server *v1alpha3.RemoteMCPServer, binding
 				Selector: metav1.LabelSelector{MatchLabels: map[string]string{"runtime": "coding"}},
 			},
 			Workload: v1alpha3.HarnessWorkload{Image: testImage},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
-				WorkerPoolRef: corev1.LocalObjectReference{Name: "workers"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
-			},
 		},
 	}
 	objects := []client.Object{model, server}
@@ -357,8 +363,7 @@ func TestLiteralHarnessEnvironmentIsRejected(t *testing.T) {
 	literal := "non-secret-runtime-setting"
 	harness := &v1alpha3.Harness{ObjectMeta: metav1.ObjectMeta{Name: "codex", Namespace: "test"}, Spec: v1alpha3.HarnessSpec{
 		Codex: &v1alpha3.CodexHarness{}, Workload: v1alpha3.HarnessWorkload{Image: testImage},
-		Env:       []v1alpha3.HarnessEnvVar{{Name: "RUNTIME_MODE", Value: &literal}},
-		Substrate: v1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "workers"}, SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}},
+		Env: []v1alpha3.HarnessEnvVar{{Name: "RUNTIME_MODE", Value: &literal}},
 	}}
 	model := &v1alpha3.ModelConfig{ObjectMeta: metav1.ObjectMeta{Name: "model", Namespace: "test"}, Spec: v1alpha3.ModelConfigSpec{
 		Provider: v1alpha3.ModelProviderOpenAI, Model: "gpt-5",

@@ -19,8 +19,7 @@ import (
 )
 
 // Compiler renders the common, credential-free config contract for one
-// coding-agent runtime. It intentionally remains unregistered until a pinned
-// image implements the corresponding materializer and private A2A service.
+// coding-agent runtime hosted by an enrolled external Substrate slot.
 type Compiler struct {
 	runtime Runtime
 	kube    v2translator.Reader
@@ -111,8 +110,7 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		Environment:        nil,
 		ConfigJSON:         configJSON,
 		AgentCardJSON:      cardJSON,
-		WorkerPoolName:     input.Harness.Spec.Substrate.WorkerPoolRef.Name,
-		SnapshotLocation:   input.Harness.Spec.Substrate.SnapshotPolicy.Location,
+		Placement:          v2translator.RevisionPlacementExternalSlot,
 		Provenance:         provenance,
 		EgressDestinations: compiled.egress,
 	}, nil
@@ -141,8 +139,11 @@ func (c *Compiler) validateInput(input *v2translator.HarnessInput) error {
 		(c.runtime == RuntimeClaude && (input.Harness.Spec.Claude == nil || input.Harness.Spec.Codex != nil || input.Harness.Spec.Kagent != nil)) {
 		return v2translator.NewValidationError("%s compiler does not match selected Harness runtime", c.runtime)
 	}
-	if !ociDigestPattern.MatchString(input.Harness.Spec.Workload.Image) || input.Harness.Spec.Substrate.WorkerPoolRef.Name == "" || input.Harness.Spec.Substrate.SnapshotPolicy.Location == "" {
-		return v2translator.NewValidationError("%s Harness requires pinned workload and Substrate policy", c.runtime)
+	if !ociDigestPattern.MatchString(input.Harness.Spec.Workload.Image) {
+		return v2translator.NewValidationError("%s Harness requires pinned workload image", c.runtime)
+	}
+	if input.Harness.Spec.Substrate != nil {
+		return v2translator.NewValidationError("%s Harness does not accept Kubernetes Substrate policy", c.runtime)
 	}
 	if len(input.Harness.Spec.Env) != 0 {
 		return v2translator.NewValidationError("coding-agent Harness v2 does not support environment variables")

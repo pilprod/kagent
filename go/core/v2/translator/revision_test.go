@@ -6,7 +6,7 @@ import (
 )
 
 func TestRevisionDigestIncludesProvenance(t *testing.T) {
-	revision := &Revision{Namespace: "agents", AgentTemplateName: "helper", HarnessName: "kagent", Provenance: []byte(`[{"kind":"Secret","hash":"first"}]`)}
+	revision := &Revision{Namespace: "agents", AgentTemplateName: "helper", HarnessName: "kagent", Placement: RevisionPlacementKubernetesPod, Provenance: []byte(`[{"kind":"Secret","hash":"first"}]`)}
 	first, err := revision.Digest()
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +27,7 @@ func TestRevisionDigestIncludesProvenance(t *testing.T) {
 func TestRevisionDigestIncludesPrivateMCPPolicy(t *testing.T) {
 	revision := &Revision{
 		Namespace: "agents", AgentTemplateName: "helper", HarnessName: "codex",
+		Placement: RevisionPlacementExternalSlot,
 		MCPPolicy: MCPPolicyV1{Version: MCPPolicyVersionV1, Bindings: []MCPPolicyBinding{}},
 	}
 	first, err := revision.Digest()
@@ -40,5 +41,30 @@ func TestRevisionDigestIncludesPrivateMCPPolicy(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("private MCP policy did not change runtime revision")
+	}
+}
+
+func TestRevisionDigestIncludesPlacement(t *testing.T) {
+	revision := &Revision{Namespace: "agents", AgentTemplateName: "helper", HarnessName: "runtime", Placement: RevisionPlacementKubernetesPod}
+	kubernetes, err := revision.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Placement = RevisionPlacementExternalSlot
+	external, err := revision.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kubernetes == external {
+		t.Fatal("placement did not change runtime revision")
+	}
+}
+
+func TestRevisionDigestRejectsUnknownPlacement(t *testing.T) {
+	for _, placement := range []RevisionPlacement{"", "NativeProcess"} {
+		revision := &Revision{Placement: placement}
+		if _, err := revision.Digest(); err == nil {
+			t.Fatalf("Digest accepted placement %q", placement)
+		}
 	}
 }

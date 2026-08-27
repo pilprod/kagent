@@ -30,10 +30,15 @@ const (
 // compiled revision. It performs no reads or writes, which makes it safe to use
 // inside a KRT transformation.
 func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.RevisionID) (*atev1alpha1.ActorTemplate, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("runtime revision is required")
+	}
 	if revisionID.IsZero() {
 		return nil, fmt.Errorf("runtime revision ID is required")
 	}
-	workerKey := types.NamespacedName{Namespace: spec.Namespace, Name: spec.WorkerPoolName}
+	if err := spec.Placement.Validate(); err != nil {
+		return nil, err
+	}
 	name := revisionActorTemplateName(spec.AgentTemplateName, spec.HarnessName, revisionID)
 	// Config is passed inline because Substrate ActorTemplates support only
 	// literal environment variables. The revision digest already covers both
@@ -51,6 +56,46 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 		return nil, fmt.Errorf("runtime revision has %d environment variables; Substrate supports at most 32", len(actorEnv))
 	}
 
+	container := atev1alpha1.Container{
+		Name:  defaultContainerName,
+		Image: spec.Image,
+		Env:   actorEnv,
+		Readyz: &atev1alpha1.ContainerReadyz{HTTPGet: &atev1alpha1.HTTPGetAction{
+			Path: "/readyz",
+			Port: 8081,
+		}, TimeoutSeconds: 30},
+	}
+	actorSpec := atev1alpha1.ActorTemplateSpec{
+		Containers:      []atev1alpha1.Container{container},
+		SnapshotsConfig: atev1alpha1.SnapshotsConfig{},
+	}
+	switch spec.Placement {
+	case translator.RevisionPlacementKubernetesPod:
+		if spec.WorkerPoolName == "" || spec.SnapshotLocation == "" {
+			return nil, fmt.Errorf("KubernetesPod runtime revision requires worker pool and snapshot location")
+		}
+		workerKey := types.NamespacedName{Namespace: spec.Namespace, Name: spec.WorkerPoolName}
+		actorSpec.WorkerProvider = atev1alpha1.WorkerProviderKubernetesPod
+		actorSpec.SandboxClass = atev1alpha1.SandboxClassGvisor
+		actorSpec.Containers[0].VolumeMounts = []atev1alpha1.VolumeMount{{Name: durableDataVolume, MountPath: durableDataMount}}
+		actorSpec.WorkerSelector = workerSelectorForPool(workerKey)
+		actorSpec.SnapshotsConfig = atev1alpha1.SnapshotsConfig{
+			Location: spec.SnapshotLocation,
+			OnPause:  atev1alpha1.SnapshotScopeFull,
+			OnCommit: atev1alpha1.SnapshotScopeData,
+			OnResume: atev1alpha1.OnResumeConfig{FromData: atev1alpha1.ResumeSourceColdBoot},
+		}
+		actorSpec.Volumes = []atev1alpha1.Volume{{
+			Name:         durableDataVolume,
+			VolumeSource: atev1alpha1.VolumeSource{DurableDir: &atev1alpha1.DurableDirVolumeSource{}},
+		}}
+	case translator.RevisionPlacementExternalSlot:
+		if spec.WorkerPoolName != "" || spec.SnapshotLocation != "" {
+			return nil, fmt.Errorf("ExternalSlot runtime revision must not include worker pool or snapshot location")
+		}
+		actorSpec.WorkerProvider = atev1alpha1.WorkerProviderExternalSlot
+	}
+
 	template := &atev1alpha1.ActorTemplate{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: spec.Namespace,
@@ -62,31 +107,7 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 				RevisionLabel:                  revisionID.Short(),
 			},
 		},
-		Spec: atev1alpha1.ActorTemplateSpec{
-			// The v2 API intentionally has one default sandbox policy for now.
-			SandboxClass: atev1alpha1.SandboxClassGvisor,
-			Containers: []atev1alpha1.Container{{
-				Name:  defaultContainerName,
-				Image: spec.Image,
-				Env:   actorEnv,
-				Readyz: &atev1alpha1.ContainerReadyz{HTTPGet: &atev1alpha1.HTTPGetAction{
-					Path: "/readyz",
-					Port: 8081,
-				}, TimeoutSeconds: 30},
-				VolumeMounts: []atev1alpha1.VolumeMount{{Name: durableDataVolume, MountPath: durableDataMount}},
-			}},
-			WorkerSelector: workerSelectorForPool(workerKey),
-			SnapshotsConfig: atev1alpha1.SnapshotsConfig{
-				Location: spec.SnapshotLocation,
-				OnPause:  atev1alpha1.SnapshotScopeFull,
-				OnCommit: atev1alpha1.SnapshotScopeData,
-				OnResume: atev1alpha1.OnResumeConfig{FromData: atev1alpha1.ResumeSourceColdBoot},
-			},
-			Volumes: []atev1alpha1.Volume{{
-				Name:         durableDataVolume,
-				VolumeSource: atev1alpha1.VolumeSource{DurableDir: &atev1alpha1.DurableDirVolumeSource{}},
-			}},
-		},
+		Spec: actorSpec,
 	}
 	return template, nil
 }

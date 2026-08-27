@@ -1430,7 +1430,11 @@ func (in *HarnessSpec) DeepCopyInto(out *HarnessSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	out.Substrate = in.Substrate
+	if in.Substrate != nil {
+		in, out := &in.Substrate, &out.Substrate
+		*out = new(HarnessSubstratePolicy)
+		**out = **in
+	}
 	if in.AllowedAgentTemplates != nil {
 		in, out := &in.AllowedAgentTemplates, &out.AllowedAgentTemplates
 		*out = new(HarnessAgentTemplateAdmission)

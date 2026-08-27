@@ -163,8 +163,10 @@ spec:
                 description: KagentHarness selects the kagent runtime adapter.
                 type: object
               substrate:
-                description: HarnessSubstratePolicy contains the Substrate policy
-                  shared by all runtime variants.
+                description: |-
+                  Substrate configures Kubernetes-backed execution for the kagent runtime.
+                  It is required for kagent and forbidden for Codex and Claude, whose
+                  compilers select ExternalSlot placement.
                 properties:
                   snapshotPolicy:
                     description: SnapshotPolicy configures runtime snapshot storage.
@@ -212,13 +214,15 @@ spec:
                 - image
                 type: object
             required:
-            - substrate
             - workload
             type: object
             x-kubernetes-validations:
             - message: exactly one of kagent, codex, or claude must be specified
               rule: '(has(self.kagent) ? 1 : 0) + (has(self.codex) ? 1 : 0) + (has(self.claude)
                 ? 1 : 0) == 1'
+            - message: substrate is required for kagent and forbidden for codex or
+                claude
+              rule: has(self.kagent) == has(self.substrate)
           status:
             description: HarnessStatus reports controller-derived capabilities and
               current health.

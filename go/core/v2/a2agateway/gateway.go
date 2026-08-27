@@ -429,14 +429,12 @@ func (g *Gateway) GetExtendedAgentCard(ctx context.Context, _ *a2atype.GetExtend
 	// security, and signatures belong to the gateway instead of the private
 	// runtime that produced that card.
 	card.SupportedInterfaces = []*a2atype.AgentInterface{a2atype.NewAgentInterface(g.gatewayURL, a2atype.TransportProtocolGRPC)}
-	// Extensions are the exception, and replacing the whole capabilities struct
-	// used to drop them. They describe what the runtime behind this gateway can
-	// negotiate — human-in-the-loop among them — which is not the gateway's to
-	// erase. A client discovers HITL by reading this card, so wiping it made
-	// answering an agent's question undiscoverable while the card still rendered
-	// perfectly.
-	extensions := card.Capabilities.Extensions
-	card.Capabilities = a2atype.AgentCapabilities{Streaming: true, ExtendedAgentCard: true, Extensions: extensions}
+	// Runtime capabilities remain authoritative. The gateway exposes the public
+	// transport and extended-card endpoint, but cannot make a non-streaming
+	// runtime stream or add runtime extensions such as HITL. Preserve those
+	// claims and add only the gateway-owned extended-card capability.
+	card.Capabilities.ExtendedAgentCard = true
+	card.Capabilities.PushNotifications = false
 	card.SecurityRequirements = nil
 	card.SecuritySchemes = nil
 	card.Signatures = nil

@@ -46,6 +46,9 @@ type compiledAgent struct {
 }
 
 func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput) (*v2translator.Revision, error) {
+	if input == nil || input.Harness == nil || input.Harness.Spec.Substrate == nil {
+		return nil, v2translator.NewValidationError("kagent Harness requires Substrate policy")
+	}
 	compiled, err := c.compileAgent(ctx, input.Root)
 	if err != nil {
 		return nil, err
@@ -116,6 +119,7 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		Environment:        environment,
 		ConfigJSON:         configJSON,
 		AgentCardJSON:      cardJSON,
+		Placement:          v2translator.RevisionPlacementKubernetesPod,
 		WorkerPoolName:     harness.Spec.Substrate.WorkerPoolRef.Name,
 		SnapshotLocation:   harness.Spec.Substrate.SnapshotPolicy.Location,
 		Provenance:         provenance,
