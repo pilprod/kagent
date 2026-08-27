@@ -31,11 +31,27 @@ func relayPolicyFixture(t *testing.T, serverName string, tools ...string) (trans
 		},
 		Tools: tools,
 	}
+	// Grant-visible binding identities deliberately exclude SpecHash: the
+	// persisted policy still pins it, but including it here would expose an
+	// offline oracle for private RemoteMCPServer connection material.
+	type grantServerIdentity struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+		UID       string `json:"uid"`
+	}
 	raw, err := json.Marshal(struct {
-		SubjectPath []string                     `json:"subjectPath"`
-		Server      translator.MCPServerIdentity `json:"server"`
-		Tools       []string                     `json:"tools"`
-	}{SubjectPath: binding.SubjectPath, Server: binding.Server, Tools: binding.Tools})
+		SubjectPath []string            `json:"subjectPath"`
+		Server      grantServerIdentity `json:"server"`
+		Tools       []string            `json:"tools"`
+	}{
+		SubjectPath: binding.SubjectPath,
+		Server: grantServerIdentity{
+			Namespace: binding.Server.Namespace,
+			Name:      binding.Server.Name,
+			UID:       binding.Server.UID,
+		},
+		Tools: binding.Tools,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
