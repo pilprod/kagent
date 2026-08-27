@@ -1,6 +1,8 @@
 package substrate
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
@@ -15,6 +17,9 @@ func TestActorTemplateForRevision(t *testing.T) {
 		WorkerPoolName: "default", SnapshotLocation: "snapshots",
 		ConfigJSON: []byte(`{"instruction":"help"}`), AgentCardJSON: []byte(`{"name":"helper"}`),
 		Environment: []corev1.EnvVar{{Name: "API_KEY", Value: "secret"}},
+		MCPPolicy: translator.MCPPolicyV1{Version: translator.MCPPolicyVersionV1, Bindings: []translator.MCPPolicyBinding{{
+			ID: "private-policy-marker",
+		}}},
 	}
 	revisionID, err := spec.Digest()
 	if err != nil {
@@ -40,5 +45,12 @@ func TestActorTemplateForRevision(t *testing.T) {
 	}
 	if environment["KAGENT_CONFIG_JSON"].Value != string(spec.ConfigJSON) {
 		t.Fatal("config was not embedded as a non-secret literal")
+	}
+	raw, err := json.Marshal(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("private-policy-marker")) {
+		t.Fatal("private MCP policy was materialized into the ActorTemplate")
 	}
 }

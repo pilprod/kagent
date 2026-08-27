@@ -101,7 +101,19 @@ func (c *Compiler) CompileAgentTemplate(ctx context.Context, harness *v1alpha3.H
 	if err != nil {
 		return nil, err
 	}
-	return harnessCompiler.Compile(ctx, input)
+	policy, err := buildMCPPolicy(input)
+	if err != nil {
+		return nil, err
+	}
+	revision, err := harnessCompiler.Compile(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if revision == nil {
+		return nil, fmt.Errorf("harness compiler returned no runtime revision")
+	}
+	revision.MCPPolicy = policy
+	return revision, nil
 }
 
 func harnessType(harness *v1alpha3.Harness) HarnessType {

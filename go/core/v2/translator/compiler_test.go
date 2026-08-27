@@ -92,7 +92,7 @@ func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 }
 
 func remoteMCPServer(name, url string) *v1alpha3.RemoteMCPServer {
-	return &v1alpha3.RemoteMCPServer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test"}, Spec: v1alpha3.RemoteMCPServerSpec{
+	return &v1alpha3.RemoteMCPServer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test", UID: types.UID("uid-" + name)}, Spec: v1alpha3.RemoteMCPServerSpec{
 		URL: url, Protocol: v1alpha3.RemoteMCPServerProtocolStreamableHttp,
 	}}
 }
@@ -136,6 +136,135 @@ func TestCompilerAcceptsExternalHarnessCompiler(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "assistant", revision.AgentTemplateName)
 	require.Equal(t, template.Name, adapter.input.Root.Template.Name)
+	require.Equal(t, v2translator.MCPPolicyVersionV1, revision.MCPPolicy.Version)
+	require.Empty(t, revision.MCPPolicy.Bindings)
+}
+
+func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
+	require.NoError(t, v1alpha3.AddToScheme(schemev1.Scheme))
+	rootServer := remoteMCPServer("source", "https://private.source.example/mcp")
+	rootServer.Spec.HeadersFrom = []v1alpha3.ValueRef{{
+		Name: "Authorization",
+		ValueFrom: &v1alpha3.ValueSource{
+			Type: v1alpha3.SecretValueSource, Name: "source-token", Key: "token",
+		},
+	}}
+	childServer := remoteMCPServer("knowledge", "https://private.knowledge.example/mcp")
+	child := &v1alpha3.AgentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "researcher", Namespace: "test", Labels: map[string]string{"runtime": "codex"}},
+		Spec: v1alpha3.AgentTemplateSpec{
+			ModelConfig: v1alpha3.AgentTemplateLocalReference{Name: "default-model"},
+			Tools: []v1alpha3.ToolBinding{{MCP: &v1alpha3.MCPToolBinding{
+				Server: v1alpha3.AgentTemplateTypedLocalReference{Kind: "RemoteMCPServer", Name: childServer.Name},
+				Tools:  []string{"search", "lookup"},
+			}}},
+		},
+	}
+	root := &v1alpha3.AgentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "assistant", Namespace: "test", Labels: map[string]string{"runtime": "codex"}},
+		Spec: v1alpha3.AgentTemplateSpec{
+			ModelConfig: v1alpha3.AgentTemplateLocalReference{Name: "default-model"},
+			Tools: []v1alpha3.ToolBinding{
+				{MCP: &v1alpha3.MCPToolBinding{
+					Server: v1alpha3.AgentTemplateTypedLocalReference{Kind: "RemoteMCPServer", Name: rootServer.Name},
+					Tools:  []string{"write", "read", "read"},
+				}},
+				{Agent: &v1alpha3.AgentToolBinding{
+					Name: "web_researcher", Description: "research", TemplateRef: v1alpha3.AgentTemplateLocalReference{Name: child.Name},
+				}},
+			},
+		},
+	}
+	harness := &v1alpha3.Harness{
+		ObjectMeta: metav1.ObjectMeta{Name: "codex", Namespace: "test"},
+		Spec: v1alpha3.HarnessSpec{
+			Codex: &v1alpha3.CodexHarness{},
+			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{
+				Selector: metav1.LabelSelector{MatchLabels: map[string]string{"runtime": "codex"}},
+			},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(schemev1.Scheme).WithObjects(modelConfig(), rootServer, childServer, child).Build()
+	adapter := &testHarnessCompiler{}
+	compile := v2translator.NewCompiler(testReader{kube}, map[v2translator.HarnessType]v2translator.HarnessCompiler{
+		v2translator.HarnessTypeCodex: adapter,
+	})
+	revision, err := compile.CompileAgentTemplate(context.Background(), harness, root)
+	require.NoError(t, err)
+	require.Equal(t, v2translator.MCPPolicyVersionV1, revision.MCPPolicy.Version)
+	require.Len(t, revision.MCPPolicy.Bindings, 2)
+	require.Less(t, revision.MCPPolicy.Bindings[0].ID, revision.MCPPolicy.Bindings[1].ID)
+
+	byServer := map[string]v2translator.MCPPolicyBinding{}
+	for _, binding := range revision.MCPPolicy.Bindings {
+		byServer[binding.Server.Name] = binding
+		require.Len(t, binding.ID, len("mcp-")+64)
+		require.Equal(t, "mcp-", binding.ID[:len("mcp-")])
+		require.Len(t, binding.Server.SpecHash, 64)
+	}
+	require.Equal(t, []string{"root"}, byServer[rootServer.Name].SubjectPath)
+	require.Equal(t, []string{"read", "write"}, byServer[rootServer.Name].Tools)
+	require.Equal(t, []string{"root", "web_researcher"}, byServer[childServer.Name].SubjectPath)
+	require.Equal(t, []string{"lookup", "search"}, byServer[childServer.Name].Tools)
+
+	privatePolicy, err := json.Marshal(revision.MCPPolicy)
+	require.NoError(t, err)
+	for _, forbidden := range []string{
+		rootServer.Spec.URL, childServer.Spec.URL, "Authorization", "source-token", "token",
+	} {
+		require.NotContains(t, string(privatePolicy), forbidden)
+	}
+	for _, binding := range revision.MCPPolicy.Bindings {
+		require.NotContains(t, string(revision.ConfigJSON), binding.ID)
+		require.NotContains(t, string(revision.AgentCardJSON), binding.ID)
+		require.NotContains(t, string(revision.ConfigJSON), binding.Server.SpecHash)
+	}
+
+	reordered := root.DeepCopy()
+	reordered.Spec.Tools[0].MCP.Tools = []string{"read", "write"}
+	second, err := compile.CompileAgentTemplate(context.Background(), harness, reordered)
+	require.NoError(t, err)
+	require.Equal(t, revision.MCPPolicy, second.MCPPolicy)
+
+	changedRootServer := rootServer.DeepCopy()
+	changedRootServer.Spec.URL = "https://rotated.source.example/mcp"
+	changedKube := fake.NewClientBuilder().WithScheme(schemev1.Scheme).WithObjects(modelConfig(), changedRootServer, childServer, child).Build()
+	changed, err := v2translator.NewCompiler(testReader{changedKube}, map[v2translator.HarnessType]v2translator.HarnessCompiler{
+		v2translator.HarnessTypeCodex: &testHarnessCompiler{},
+	}).CompileAgentTemplate(context.Background(), harness, root)
+	require.NoError(t, err)
+	changedByServer := map[string]v2translator.MCPPolicyBinding{}
+	for _, binding := range changed.MCPPolicy.Bindings {
+		changedByServer[binding.Server.Name] = binding
+	}
+	require.NotEqual(t, byServer[rootServer.Name].ID, changedByServer[rootServer.Name].ID)
+	firstDigest, err := revision.Digest()
+	require.NoError(t, err)
+	changedDigest, err := changed.Digest()
+	require.NoError(t, err)
+	require.NotEqual(t, firstDigest, changedDigest)
+}
+
+func TestCompilerRejectsRemoteMCPServerWithoutIdentity(t *testing.T) {
+	server := remoteMCPServer("remote", "https://private.example/mcp")
+	server.UID = ""
+	harness := &v1alpha3.Harness{
+		ObjectMeta: metav1.ObjectMeta{Name: "kagent", Namespace: "test"},
+		Spec: v1alpha3.HarnessSpec{
+			Kagent: &v1alpha3.KagentHarness{}, AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
+		},
+	}
+	template := &v1alpha3.AgentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "assistant", Namespace: "test"},
+		Spec: v1alpha3.AgentTemplateSpec{
+			ModelConfig: v1alpha3.AgentTemplateLocalReference{Name: "default-model"},
+			Tools: []v1alpha3.ToolBinding{{MCP: &v1alpha3.MCPToolBinding{
+				Server: v1alpha3.AgentTemplateTypedLocalReference{Kind: "RemoteMCPServer", Name: server.Name}, Tools: []string{"read"},
+			}}},
+		},
+	}
+	_, err := compiler(t, modelConfig(), server).CompileAgentTemplate(context.Background(), harness, template)
+	require.ErrorContains(t, err, "RemoteMCPServer UID is required")
 }
 
 func TestCompileAgentTemplateResolvesCredentialsForSubstrate(t *testing.T) {
