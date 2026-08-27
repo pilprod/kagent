@@ -62,6 +62,9 @@ func (s *gatewayTestStore) GetAgentInstance(_ context.Context, namespace, id, us
 }
 
 func (s *gatewayTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
+	if s.revision == nil {
+		return &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementKubernetesPod}, nil
+	}
 	return s.revision, nil
 }
 
@@ -775,6 +778,45 @@ func TestGatewayPersistsBeforePublishing(t *testing.T) {
 	}
 	if workflow.quiesceCalls != 1 || store.snapshot == nil || store.snapshot.UID != "snapshot-uid" {
 		t.Fatalf("quiescence calls = %d, stored snapshot = %#v", workflow.quiesceCalls, store.snapshot)
+	}
+}
+
+func TestGatewayExternalSlotPersistsQuiescentEventsWithoutSnapshot(t *testing.T) {
+	for _, state := range []a2atype.TaskState{a2atype.TaskStateCompleted, a2atype.TaskStateInputRequired} {
+		t.Run(string(state), func(t *testing.T) {
+			task := &a2atype.Task{ID: "task-1", ContextID: gatewayTestID, Status: a2atype.TaskStatus{State: state}}
+			store := &gatewayTestStore{
+				instance: gatewayTestInstance(), active: task,
+				revision: &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementExternalSlot},
+			}
+			workflow := &gatewayTestWorkflow{}
+			gateway := &Gateway{store: store, workflow: workflow}
+
+			if err := gateway.storeEvent(t.Context(), store.instance, task, task); err != nil {
+				t.Fatal(err)
+			}
+			if workflow.quiesceCalls != 0 || store.snapshot != nil || len(store.stored) != 1 || store.task != task {
+				t.Fatalf("quiescence calls = %d, snapshot = %#v, stored events = %d, task = %#v",
+					workflow.quiesceCalls, store.snapshot, len(store.stored), store.task)
+			}
+		})
+	}
+}
+
+func TestGatewayKubernetesPodStillQuiescesBeforePersisting(t *testing.T) {
+	task := &a2atype.Task{ID: "task-1", ContextID: gatewayTestID, Status: a2atype.TaskStatus{State: a2atype.TaskStateCompleted}}
+	store := &gatewayTestStore{
+		instance: gatewayTestInstance(), active: task,
+		revision: &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementKubernetesPod},
+	}
+	workflow := &gatewayTestWorkflow{}
+	gateway := &Gateway{store: store, workflow: workflow}
+
+	if err := gateway.storeEvent(t.Context(), store.instance, task, task); err != nil {
+		t.Fatal(err)
+	}
+	if workflow.quiesceCalls != 1 || store.snapshot == nil || store.snapshot.UID != "snapshot-uid" || len(store.stored) != 1 {
+		t.Fatalf("quiescence calls = %d, snapshot = %#v, stored events = %d", workflow.quiesceCalls, store.snapshot, len(store.stored))
 	}
 }
 

@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	a2a "github.com/a2aproject/a2a-go/v2/a2a"
@@ -254,6 +255,31 @@ type AgentTemplateHarnessPair struct {
 	AgentTemplateLabels map[string]string
 }
 
+// RuntimeRevisionPlacement is the immutable execution-capacity boundary
+// selected by the compiler which produced a RuntimeRevision.
+type RuntimeRevisionPlacement string
+
+const (
+	RuntimeRevisionPlacementKubernetesPod RuntimeRevisionPlacement = "KubernetesPod"
+	RuntimeRevisionPlacementExternalSlot  RuntimeRevisionPlacement = "ExternalSlot"
+)
+
+// NormalizeRuntimeRevisionPlacement preserves compatibility with revisions
+// written before placement was persisted. Such revisions could only run as a
+// Kubernetes Pod. Every non-empty value must be an explicitly supported
+// placement.
+func NormalizeRuntimeRevisionPlacement(placement RuntimeRevisionPlacement) (RuntimeRevisionPlacement, error) {
+	if placement == "" {
+		return RuntimeRevisionPlacementKubernetesPod, nil
+	}
+	switch placement {
+	case RuntimeRevisionPlacementKubernetesPod, RuntimeRevisionPlacementExternalSlot:
+		return placement, nil
+	default:
+		return "", fmt.Errorf("unsupported runtime revision placement %q", placement)
+	}
+}
+
 type RuntimeRevision struct {
 	Revision          string
 	Namespace         string
@@ -261,6 +287,7 @@ type RuntimeRevision struct {
 	AgentTemplateUID  string
 	HarnessName       string
 	HarnessUID        string
+	Placement         RuntimeRevisionPlacement
 	SourceSnapshot    json.RawMessage
 	AgentCard         json.RawMessage
 	// MCPPolicy is private control-plane authorization data. It is persisted

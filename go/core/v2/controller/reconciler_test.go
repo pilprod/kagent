@@ -82,6 +82,9 @@ func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	if string(store.revision.MCPPolicy) != `{"version":"v1","bindings":[]}` {
 		t.Fatalf("persisted MCP policy = %s", store.revision.MCPPolicy)
 	}
+	if store.revision.Placement != dbpkg.RuntimeRevisionPlacementKubernetesPod {
+		t.Fatalf("persisted placement = %q", store.revision.Placement)
+	}
 
 	if err := reconciler.reconcileStatus(context.Background(), "team-a/assistant"); err != nil {
 		t.Fatal(err)

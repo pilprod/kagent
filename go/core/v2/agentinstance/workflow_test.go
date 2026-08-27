@@ -74,6 +74,9 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil || len(actors.actors) != 0 {
 		t.Fatalf("deleted instance = %+v, actors = %v", deleted, actors.actors)
 	}
+	if actors.suspendCalls != 2 || actors.deleteCalls != 1 {
+		t.Fatalf("KubernetesPod lifecycle suspend calls = %d, delete calls = %d", actors.suspendCalls, actors.deleteCalls)
+	}
 }
 
 func TestActorWorkflowForkCreatesSuspendedActorFromCheckpoint(t *testing.T) {
@@ -109,9 +112,94 @@ func TestActorWorkflowForkCreatesSuspendedActorFromCheckpoint(t *testing.T) {
 	}
 }
 
+func TestActorWorkflowExternalSlotRejectsSnapshotLifecycleBeforeMutation(t *testing.T) {
+	checkpoint := &dbpkg.AgentInstanceCheckpoint{
+		ID: "checkpoint-1", SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
+	}
+	tests := []struct {
+		name  string
+		state apiv1alpha1.AgentInstanceState
+		run   func(*ActorWorkflow, *apiv1alpha1.AgentInstance) error
+	}{
+		{name: "quiesce", state: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY, run: func(workflow *ActorWorkflow, instance *apiv1alpha1.AgentInstance) error {
+			_, err := workflow.Quiesce(t.Context(), instance)
+			return err
+		}},
+		{name: "suspend", state: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY, run: func(workflow *ActorWorkflow, instance *apiv1alpha1.AgentInstance) error {
+			_, err := workflow.Suspend(t.Context(), instance)
+			return err
+		}},
+		{name: "resume", state: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED, run: func(workflow *ActorWorkflow, instance *apiv1alpha1.AgentInstance) error {
+			_, err := workflow.Resume(t.Context(), instance)
+			return err
+		}},
+		{name: "fork", state: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING, run: func(workflow *ActorWorkflow, instance *apiv1alpha1.AgentInstance) error {
+			_, err := workflow.Fork(t.Context(), instance, checkpoint)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := &apiv1alpha1.AgentInstance{
+				Id: "external-1", Namespace: "team-a", PreparedRevision: "revision-external", State: test.state,
+			}
+			store := &lifecycleTestStore{
+				instance: instance,
+				revision: &dbpkg.RuntimeRevision{
+					Revision: "revision-external", Placement: dbpkg.RuntimeRevisionPlacementExternalSlot,
+					ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-codex-revision",
+				},
+			}
+			actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
+
+			err := test.run(NewActorWorkflow(store, actors), instance)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("error = %v, want FailedPrecondition", err)
+			}
+			if store.transitionCalls != 0 || actors.ensureCalls != 0 || actors.suspendCalls != 0 || actors.resumeCalls != 0 || actors.createFromSnapshotCalls != 0 {
+				t.Fatalf("mutation calls: transitions=%d ensure=%d suspend=%d resume=%d create-from-snapshot=%d",
+					store.transitionCalls, actors.ensureCalls, actors.suspendCalls, actors.resumeCalls, actors.createFromSnapshotCalls)
+			}
+		})
+	}
+}
+
+func TestActorWorkflowExternalSlotDeleteSkipsSuspend(t *testing.T) {
+	instance := &apiv1alpha1.AgentInstance{
+		Id: "external-1", Namespace: "team-a", PreparedRevision: "revision-external",
+		State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
+	}
+	store := &lifecycleTestStore{
+		instance: instance,
+		revision: &dbpkg.RuntimeRevision{
+			Revision: "revision-external", Placement: dbpkg.RuntimeRevisionPlacementExternalSlot,
+			ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-codex-revision",
+		},
+	}
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{
+		actorKey("team-a", actorName(instance.GetId())): {
+			Metadata:               &ateapipb.ResourceMetadata{Atespace: "team-a", Name: actorName(instance.GetId()), Uid: "actor-uid"},
+			ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-codex-revision",
+			Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
+		},
+	}}
+
+	deleted, err := NewActorWorkflow(store, actors).Delete(t.Context(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil {
+		t.Fatalf("deleted instance = %+v, stored = %+v", deleted, store.instance)
+	}
+	if actors.suspendCalls != 0 || actors.deleteCalls != 1 {
+		t.Fatalf("suspend calls = %d, delete calls = %d", actors.suspendCalls, actors.deleteCalls)
+	}
+}
+
 type lifecycleTestStore struct {
-	instance *apiv1alpha1.AgentInstance
-	revision *dbpkg.RuntimeRevision
+	instance        *apiv1alpha1.AgentInstance
+	revision        *dbpkg.RuntimeRevision
+	transitionCalls int
 }
 
 func (s *lifecycleTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
@@ -126,6 +214,7 @@ func (s *lifecycleTestStore) MarkAgentInstanceReady(_ context.Context, _ string,
 }
 
 func (s *lifecycleTestStore) TransitionAgentInstance(_ context.Context, instance *apiv1alpha1.AgentInstance, expectedState apiv1alpha1.AgentInstanceState, expectedOperation apiv1alpha1.AgentInstanceOperation) (*apiv1alpha1.AgentInstance, error) {
+	s.transitionCalls++
 	if s.instance.GetState() != expectedState || s.instance.GetOperation() != expectedOperation {
 		return s.instance, dbpkg.ErrAgentInstanceConflict
 	}
@@ -139,12 +228,20 @@ func (s *lifecycleTestStore) DeleteAgentInstance(context.Context, string) error 
 }
 
 type lifecycleTestActors struct {
-	actors map[string]*ateapipb.Actor
+	actors                  map[string]*ateapipb.Actor
+	ensureCalls             int
+	suspendCalls            int
+	resumeCalls             int
+	createFromSnapshotCalls int
+	deleteCalls             int
 }
 
 func actorKey(atespace, name string) string { return atespace + "/" + name }
 
-func (*lifecycleTestActors) EnsureAtespace(context.Context, string) error { return nil }
+func (a *lifecycleTestActors) EnsureAtespace(context.Context, string) error {
+	a.ensureCalls++
+	return nil
+}
 
 func (a *lifecycleTestActors) GetActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
 	actor := a.actors[actorKey(atespace, name)]
@@ -165,6 +262,7 @@ func (a *lifecycleTestActors) CreateActor(_ context.Context, atespace, name, tem
 }
 
 func (a *lifecycleTestActors) CreateActorFromSnapshotTag(_ context.Context, atespace, name, templateNamespace, templateName, tagAtespace, tagName string) (*ateapipb.Actor, error) {
+	a.createFromSnapshotCalls++
 	actor := &ateapipb.Actor{
 		Metadata:               &ateapipb.ResourceMetadata{Atespace: atespace, Name: name, Uid: "actor-uid"},
 		ActorTemplateNamespace: templateNamespace, ActorTemplateName: templateName,
@@ -181,12 +279,14 @@ func (a *lifecycleTestActors) CreateActorFromSnapshotTag(_ context.Context, ates
 }
 
 func (a *lifecycleTestActors) ResumeActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
+	a.resumeCalls++
 	actor := a.actors[actorKey(atespace, name)]
 	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
 	return actor, nil
 }
 
 func (a *lifecycleTestActors) SuspendActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
+	a.suspendCalls++
 	actor := a.actors[actorKey(atespace, name)]
 	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_SUSPENDED
 	actor.Status.LatestSnapshot = &ateapipb.ObjectRef{Atespace: atespace, Name: "snapshot-1"}
@@ -201,6 +301,7 @@ func (a *lifecycleTestActors) GetActorSnapshot(_ context.Context, atespace, name
 }
 
 func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string) error {
+	a.deleteCalls++
 	delete(a.actors, actorKey(atespace, name))
 	return nil
 }

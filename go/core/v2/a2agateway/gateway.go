@@ -711,10 +711,22 @@ func validateTaskInfo(value a2atype.TaskInfoProvider, expected *a2atype.Task) er
 func (g *Gateway) storeEvent(ctx context.Context, instance *apiv1alpha1.AgentInstance, task *a2atype.Task, event a2atype.Event) error {
 	var snapshot *dbpkg.AgentInstanceTaskSnapshot
 	if task != nil && isQuiescent(task.Status.State) {
-		var err error
-		snapshot, err = g.workflow.Quiesce(ctx, instance)
+		revision, err := g.store.GetRuntimeRevision(ctx, instance.GetPreparedRevision())
 		if err != nil {
-			return fmt.Errorf("quiesce AgentInstance runtime: %w", err)
+			return fmt.Errorf("load prepared runtime revision: %w", err)
+		}
+		if revision == nil {
+			return fmt.Errorf("load prepared runtime revision: empty result")
+		}
+		placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+		if err != nil {
+			return fmt.Errorf("load prepared runtime revision: %w", err)
+		}
+		if placement == dbpkg.RuntimeRevisionPlacementKubernetesPod {
+			snapshot, err = g.workflow.Quiesce(ctx, instance)
+			if err != nil {
+				return fmt.Errorf("quiesce AgentInstance runtime: %w", err)
+			}
 		}
 	}
 	return g.store.StoreAgentInstanceTaskEvent(ctx, instance.GetId(), task, event, snapshot)

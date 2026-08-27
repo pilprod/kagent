@@ -49,6 +49,13 @@ func NewActorWorkflow(store workflowStore, actors actorClient) *ActorWorkflow {
 // Quiesce durably suspends the runtime without changing the AgentInstance's
 // logical READY state and returns the exact immutable snapshot it produced.
 func (w *ActorWorkflow) Quiesce(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*dbpkg.AgentInstanceTaskSnapshot, error) {
+	revision, err := w.preparedRevision(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotLifecycle(revision, "quiesce"); err != nil {
+		return nil, err
+	}
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
 	actor, err := w.actors.SuspendActor(ctx, atespace, name)
 	if err != nil {
@@ -120,15 +127,18 @@ func (w *ActorWorkflow) Create(ctx context.Context, instance *apiv1alpha1.AgentI
 }
 
 func (w *ActorWorkflow) Fork(ctx context.Context, instance *apiv1alpha1.AgentInstance, checkpoint *dbpkg.AgentInstanceCheckpoint) (*apiv1alpha1.AgentInstance, error) {
+	revision, err := w.preparedRevision(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotLifecycle(revision, "fork"); err != nil {
+		return nil, err
+	}
 	if instance.GetState() == apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY {
 		return instance, nil
 	}
 	if instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING {
 		return nil, fmt.Errorf("AgentInstance %s is not creating", instance.GetId())
-	}
-	revision, err := w.store.GetRuntimeRevision(ctx, instance.GetPreparedRevision())
-	if err != nil {
-		return nil, fmt.Errorf("load prepared revision: %w", err)
 	}
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
 	if err := w.actors.EnsureAtespace(ctx, atespace); err != nil {
@@ -169,6 +179,13 @@ func (w *ActorWorkflow) Fork(ctx context.Context, instance *apiv1alpha1.AgentIns
 // because Substrate's imperative SuspendActor call joins or completes the
 // in-flight operation. The workflow never recreates a missing Actor.
 func (w *ActorWorkflow) Suspend(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*apiv1alpha1.AgentInstance, error) {
+	revision, err := w.preparedRevision(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotLifecycle(revision, "suspend"); err != nil {
+		return nil, err
+	}
 	instance, claimed, err := w.claim(ctx, instance,
 		apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
 		apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_SUSPEND,
@@ -176,7 +193,7 @@ func (w *ActorWorkflow) Suspend(ctx context.Context, instance *apiv1alpha1.Agent
 	if err != nil {
 		return nil, err
 	}
-	actor, err := w.lifecycleActor(ctx, instance)
+	actor, err := w.lifecycleActor(ctx, instance, revision)
 	if err == nil {
 		switch actor.GetStatus().GetState() {
 		case ateapipb.ActorState_ACTOR_STATE_SUSPENDED:
@@ -200,6 +217,13 @@ func (w *ActorWorkflow) Suspend(ctx context.Context, instance *apiv1alpha1.Agent
 // join a transitional Actor, but a missing Actor is an error rather than a
 // request to recreate it.
 func (w *ActorWorkflow) Resume(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*apiv1alpha1.AgentInstance, error) {
+	revision, err := w.preparedRevision(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotLifecycle(revision, "resume"); err != nil {
+		return nil, err
+	}
 	instance, claimed, err := w.claim(ctx, instance,
 		apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED,
 		apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_RESUME,
@@ -207,7 +231,7 @@ func (w *ActorWorkflow) Resume(ctx context.Context, instance *apiv1alpha1.AgentI
 	if err != nil {
 		return nil, err
 	}
-	actor, err := w.lifecycleActor(ctx, instance)
+	actor, err := w.lifecycleActor(ctx, instance, revision)
 	if err == nil {
 		switch actor.GetStatus().GetState() {
 		case ateapipb.ActorState_ACTOR_STATE_RUNNING:
@@ -233,11 +257,7 @@ func (w *ActorWorkflow) Resume(ctx context.Context, instance *apiv1alpha1.AgentI
 // only on the Actor created for this prepared revision; a missing Actor or a
 // changed ActorTemplate indicates broken identity and must be surfaced rather
 // than repaired by creating or adopting an Actor.
-func (w *ActorWorkflow) lifecycleActor(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*ateapipb.Actor, error) {
-	revision, err := w.store.GetRuntimeRevision(ctx, instance.GetPreparedRevision())
-	if err != nil {
-		return nil, fmt.Errorf("load prepared revision: %w", err)
-	}
+func (w *ActorWorkflow) lifecycleActor(ctx context.Context, instance *apiv1alpha1.AgentInstance, revision *dbpkg.RuntimeRevision) (*ateapipb.Actor, error) {
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
 	actor, err := w.actors.GetActor(ctx, atespace, name)
 	if err != nil {
@@ -247,6 +267,28 @@ func (w *ActorWorkflow) lifecycleActor(ctx context.Context, instance *apiv1alpha
 		return nil, fmt.Errorf("actor %s/%s uses unexpected ActorTemplate %s/%s", atespace, name, actor.GetActorTemplateNamespace(), actor.GetActorTemplateName())
 	}
 	return actor, nil
+}
+
+func (w *ActorWorkflow) preparedRevision(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*dbpkg.RuntimeRevision, error) {
+	revision, err := w.store.GetRuntimeRevision(ctx, instance.GetPreparedRevision())
+	if err != nil {
+		return nil, fmt.Errorf("load prepared revision: %w", err)
+	}
+	if revision == nil {
+		return nil, fmt.Errorf("load prepared revision: empty result")
+	}
+	return revision, nil
+}
+
+func requireSnapshotLifecycle(revision *dbpkg.RuntimeRevision, operation string) error {
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s runtime revision: %v", operation, err)
+	}
+	if placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+		return status.Errorf(codes.FailedPrecondition, "%s is not supported for ExternalSlot runtime revisions", operation)
+	}
+	return nil
 }
 
 func (w *ActorWorkflow) claim(
@@ -331,6 +373,13 @@ func (w *ActorWorkflow) Delete(ctx context.Context, instance *apiv1alpha1.AgentI
 	if err != nil {
 		return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("load prepared revision: %w", err))
 	}
+	if revision == nil {
+		return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("load prepared revision: empty result"))
+	}
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("load prepared revision: %w", err))
+	}
 	atespace := instance.GetNamespace()
 	name := actorName(instance.GetId())
 	actor, err := w.actors.GetActor(ctx, atespace, name)
@@ -343,13 +392,15 @@ func (w *ActorWorkflow) Delete(ctx context.Context, instance *apiv1alpha1.AgentI
 	if actor.GetActorTemplateNamespace() != revision.ActorTemplateNamespace || actor.GetActorTemplateName() != revision.ActorTemplateName {
 		return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("refuse to delete Actor %s/%s: ActorTemplate changed", atespace, name))
 	}
-	// Substrate's suspend and delete RPCs each run their workflows to
-	// completion, so no local status polling is needed between them.
-	switch actor.GetStatus().GetState() {
-	case ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ateapipb.ActorState_ACTOR_STATE_CRASHED, ateapipb.ActorState_ACTOR_STATE_DELETING:
-	default:
-		if _, err := w.actors.SuspendActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
-			return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("suspend Actor %s/%s before deletion: %w", atespace, name, err))
+	if placement == dbpkg.RuntimeRevisionPlacementKubernetesPod {
+		// Substrate's suspend and delete RPCs each run their workflows to
+		// completion, so no local status polling is needed between them.
+		switch actor.GetStatus().GetState() {
+		case ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ateapipb.ActorState_ACTOR_STATE_CRASHED, ateapipb.ActorState_ACTOR_STATE_DELETING:
+		default:
+			if _, err := w.actors.SuspendActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
+				return nil, w.release(ctx, instance, originalState, claimed, fmt.Errorf("suspend Actor %s/%s before deletion: %w", atespace, name, err))
+			}
 		}
 	}
 	if err := w.actors.DeleteActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {

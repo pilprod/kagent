@@ -94,6 +94,9 @@ func (s *Service) Create(ctx context.Context, namespace, instanceID, requestID s
 	if errors.Is(err, dbpkg.ErrAgentInstanceConflict) || errors.Is(err, dbpkg.ErrAgentInstanceNotQuiescent) {
 		return nil, serviceerrors.NewFailedPrecondition("AgentInstance has no quiescent turn boundary", err)
 	}
+	if errors.Is(err, dbpkg.ErrAgentInstanceSnapshotUnsupported) {
+		return nil, serviceerrors.NewFailedPrecondition("AgentInstance runtime does not support checkpoints", err)
+	}
 	if err != nil {
 		return nil, serviceerrors.NewInternal("Failed to reserve checkpoint", err)
 	}
@@ -267,10 +270,16 @@ func (s *Service) Fork(ctx context.Context, namespace, checkpointID, requestID s
 	if errors.Is(err, dbpkg.ErrNotFound) {
 		return nil, serviceerrors.NewNotFound("Checkpoint not found", err)
 	}
+	if errors.Is(err, dbpkg.ErrAgentInstanceSnapshotUnsupported) {
+		return nil, serviceerrors.NewFailedPrecondition("AgentInstance runtime does not support checkpoint forks", err)
+	}
 	if err != nil {
 		return nil, serviceerrors.NewInternal("Failed to reserve fork AgentInstance", err)
 	}
 	instance, err = s.workflow.Fork(ctx, instance, checkpoint)
+	if status.Code(err) == codes.FailedPrecondition {
+		return nil, serviceerrors.NewFailedPrecondition("AgentInstance runtime does not support checkpoint forks", err)
+	}
 	if err != nil {
 		return nil, serviceerrors.NewUnavailable("Failed to create fork AgentInstance", err)
 	}

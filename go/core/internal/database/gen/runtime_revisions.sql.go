@@ -28,7 +28,7 @@ func (q *Queries) DeleteUnreferencedRuntimeRevision(ctx context.Context, revisio
 }
 
 const getRuntimeRevision = `-- name: GetRuntimeRevision :one
-SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, mcp_policy FROM runtime_revision WHERE revision = $1
+SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, mcp_policy, placement FROM runtime_revision WHERE revision = $1
 `
 
 func (q *Queries) GetRuntimeRevision(ctx context.Context, revision string) (RuntimeRevision, error) {
@@ -52,12 +52,13 @@ func (q *Queries) GetRuntimeRevision(ctx context.Context, revision string) (Runt
 		&i.UpdatedAt,
 		&i.AgentCard,
 		&i.McpPolicy,
+		&i.Placement,
 	)
 	return i, err
 }
 
 const listUnreferencedRuntimeRevisions = `-- name: ListUnreferencedRuntimeRevisions :many
-SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, mcp_policy FROM runtime_revision r
+SELECT revision, namespace, agent_template_name, agent_template_uid, harness_name, harness_uid, source_snapshot, egress_destinations, actor_template_namespace, actor_template_name, actor_template_uid, phase, golden_snapshot, created_at, updated_at, agent_card, mcp_policy, placement FROM runtime_revision r
 WHERE NOT EXISTS (
     SELECT 1 FROM agent_template_harness_pair p
     WHERE p.retired_at IS NULL
@@ -95,6 +96,7 @@ func (q *Queries) ListUnreferencedRuntimeRevisions(ctx context.Context) ([]Runti
 			&i.UpdatedAt,
 			&i.AgentCard,
 			&i.McpPolicy,
+			&i.Placement,
 		); err != nil {
 			return nil, err
 		}
@@ -227,10 +229,10 @@ INSERT INTO runtime_revision (
     revision, namespace, agent_template_name, agent_template_uid,
     harness_name, harness_uid, source_snapshot, agent_card, mcp_policy, egress_destinations,
     actor_template_namespace, actor_template_name, actor_template_uid,
-    phase, golden_snapshot
+    phase, golden_snapshot, placement
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14, $15
+    $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (revision) DO UPDATE SET
     agent_card = EXCLUDED.agent_card,
@@ -239,6 +241,7 @@ ON CONFLICT (revision) DO UPDATE SET
     golden_snapshot = EXCLUDED.golden_snapshot,
     updated_at = NOW()
 WHERE runtime_revision.mcp_policy = EXCLUDED.mcp_policy
+  AND runtime_revision.placement = EXCLUDED.placement
 `
 
 type UpsertRuntimeRevisionParams struct {
@@ -257,11 +260,12 @@ type UpsertRuntimeRevisionParams struct {
 	ActorTemplateUid       string
 	Phase                  string
 	GoldenSnapshot         string
+	Placement              string
 }
 
-// MCP policy participates in the revision digest and is immutable. JSONB
-// equality is semantic, so harmless formatting differences do not create a
-// false collision.
+// MCP policy and placement participate in the revision digest and are
+// immutable. JSONB equality is semantic, so harmless policy formatting
+// differences do not create a false collision.
 func (q *Queries) UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, upsertRuntimeRevision,
 		arg.Revision,
@@ -279,6 +283,7 @@ func (q *Queries) UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRe
 		arg.ActorTemplateUid,
 		arg.Phase,
 		arg.GoldenSnapshot,
+		arg.Placement,
 	)
 	if err != nil {
 		return 0, err

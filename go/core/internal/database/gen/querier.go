@@ -122,9 +122,9 @@ type Querier interface {
 	UpsertCheckpointWrite(ctx context.Context, arg UpsertCheckpointWriteParams) error
 	UpsertCrewAIFlowState(ctx context.Context, arg UpsertCrewAIFlowStateParams) error
 	UpsertCrewAIMemory(ctx context.Context, arg UpsertCrewAIMemoryParams) error
-	// MCP policy participates in the revision digest and is immutable. JSONB
-	// equality is semantic, so harmless formatting differences do not create a
-	// false collision.
+	// MCP policy and placement participate in the revision digest and are
+	// immutable. JSONB equality is semantic, so harmless policy formatting
+	// differences do not create a false collision.
 	UpsertRuntimeRevision(ctx context.Context, arg UpsertRuntimeRevisionParams) (int64, error)
 	UpsertTool(ctx context.Context, arg UpsertToolParams) error
 	UpsertToolServer(ctx context.Context, arg UpsertToolServerParams) (Toolserver, error)

@@ -216,6 +216,7 @@ type RuntimeRevision struct {
 	UpdatedAt              time.Time
 	AgentCard              []byte
 	McpPolicy              []byte
+	Placement              string
 }
 
 type Tool struct {

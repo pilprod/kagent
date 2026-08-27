@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
+	"github.com/kagent-dev/kagent/go/core/internal/service/serviceerrors"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
 )
 
@@ -23,13 +24,18 @@ func (testAuthorizer) Check(context.Context, auth.Principal, auth.Verb, auth.Res
 }
 
 type testStore struct {
-	prepared *dbpkg.AgentInstanceCheckpoint
-	forked   *apiv1alpha1.AgentInstance
-	failed   string
-	deleted  bool
+	prepared   *dbpkg.AgentInstanceCheckpoint
+	forked     *apiv1alpha1.AgentInstance
+	failed     string
+	deleted    bool
+	reserveErr error
+	forkErr    error
 }
 
 func (s *testStore) ReserveAgentInstanceCheckpoint(_ context.Context, checkpoint dbpkg.AgentInstanceCheckpoint) (*dbpkg.AgentInstanceCheckpoint, error) {
+	if s.reserveErr != nil {
+		return nil, s.reserveErr
+	}
 	checkpoint.HeadTaskID = "task-1"
 	checkpoint.HistorySequence = 7
 	checkpoint.SnapshotAtespace = "team-a"
@@ -76,6 +82,9 @@ func (s *testStore) DeleteAgentInstanceCheckpoint(context.Context, string, strin
 }
 
 func (s *testStore) ForkAgentInstance(_ context.Context, namespace, _ string, userID, _ string, instanceID string) (*apiv1alpha1.AgentInstance, bool, error) {
+	if s.forkErr != nil {
+		return nil, false, s.forkErr
+	}
 	if s.forked == nil {
 		s.forked = &apiv1alpha1.AgentInstance{
 			Id: instanceID, Namespace: namespace, Creator: userID,
@@ -202,4 +211,36 @@ func TestForkCreatesAgentInstanceFromCheckpoint(t *testing.T) {
 		workflow.checkpoint != checkpoint || store.forked.GetId() == "" {
 		t.Fatalf("fork = %+v, checkpoint = %+v", instance, workflow.checkpoint)
 	}
+}
+
+func TestExternalSlotSnapshotOperationsFailBeforeMutation(t *testing.T) {
+	ctx := auth.AuthSessionTo(context.Background(), testSession{userID: "alice"})
+	instanceID := "018f47a2-4efb-7c21-a848-123456789abc"
+
+	t.Run("checkpoint", func(t *testing.T) {
+		store := &testStore{reserveErr: dbpkg.ErrAgentInstanceSnapshotUnsupported}
+		tags := &testTags{}
+		_, err := NewService(store, testAuthorizer{}, tags, nil).Create(ctx, "team-a", instanceID, "request-1")
+		if !serviceerrors.IsCode(err, serviceerrors.CodeFailedPrecondition) {
+			t.Fatalf("Create error = %v, want FailedPrecondition", err)
+		}
+		if store.prepared != nil || tags.created != nil {
+			t.Fatalf("checkpoint mutated state: prepared=%+v tag=%+v", store.prepared, tags.created)
+		}
+	})
+
+	t.Run("fork", func(t *testing.T) {
+		checkpoint := &dbpkg.AgentInstanceCheckpoint{
+			ID: instanceID, Namespace: "team-a", UserID: "alice", SnapshotContentScope: "DATA", State: "READY",
+		}
+		store := &testStore{prepared: checkpoint, forkErr: dbpkg.ErrAgentInstanceSnapshotUnsupported}
+		workflow := &testWorkflow{}
+		_, err := NewService(store, testAuthorizer{}, &testTags{}, workflow).Fork(ctx, "team-a", checkpoint.ID, "fork-request")
+		if !serviceerrors.IsCode(err, serviceerrors.CodeFailedPrecondition) {
+			t.Fatalf("Fork error = %v, want FailedPrecondition", err)
+		}
+		if store.forked != nil || workflow.checkpoint != nil {
+			t.Fatalf("fork mutated state: instance=%+v workflow checkpoint=%+v", store.forked, workflow.checkpoint)
+		}
+	})
 }

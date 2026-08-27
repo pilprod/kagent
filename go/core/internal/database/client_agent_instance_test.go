@@ -590,6 +590,86 @@ func TestAgentInstanceCreateAndTransitions(t *testing.T) {
 	}
 }
 
+func TestRuntimeRevisionPlacementRoundTripAndImmutability(t *testing.T) {
+	client := NewClient(setupTestDB(t))
+	ctx := context.Background()
+	revision := dbpkg.RuntimeRevision{
+		Revision: "revision-external", Namespace: "team-a",
+		AgentTemplateName: "assistant", AgentTemplateUID: "template-uid",
+		HarnessName: "codex", HarnessUID: "harness-uid",
+		Placement:      dbpkg.RuntimeRevisionPlacementExternalSlot,
+		SourceSnapshot: []byte("{}"), AgentCard: []byte(`{"name":"assistant"}`), EgressDestinations: []string{},
+		ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-codex-revision",
+		ActorTemplateUID: "actor-template-uid", Phase: "Ready",
+	}
+	if err := client.UpsertRuntimeRevision(ctx, revision); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := client.GetRuntimeRevision(ctx, revision.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Placement != dbpkg.RuntimeRevisionPlacementExternalSlot {
+		t.Fatalf("stored placement = %q", stored.Placement)
+	}
+	pair := dbpkg.AgentTemplateHarnessPair{
+		Namespace: "team-a", AgentTemplateName: "assistant", AgentTemplateUID: "template-uid",
+		HarnessName: "codex", HarnessUID: "harness-uid", DesiredRevision: revision.Revision,
+	}
+	if err := client.UpsertAgentTemplateHarnessPair(ctx, pair); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.MarkRuntimeRevisionSuccessful(ctx, pair); err != nil {
+		t.Fatal(err)
+	}
+	instance, created, err := client.CreateAgentInstance(ctx, &apiv1alpha1.AgentInstance{
+		Id: "external-instance", Namespace: "team-a", Creator: "alice",
+		Harness:       &apiv1alpha1.ResourceReference{Namespace: "team-a", Name: "codex"},
+		AgentTemplate: &apiv1alpha1.ResourceReference{Namespace: "team-a", Name: "assistant"},
+	}, "external-instance-request")
+	if err != nil || !created {
+		t.Fatalf("create external AgentInstance = %+v, created=%v, error=%v", instance, created, err)
+	}
+	if _, err := client.MarkAgentInstanceReady(ctx, instance.GetId(), "external.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReserveAgentInstanceCheckpoint(ctx, dbpkg.AgentInstanceCheckpoint{
+		ID: "external-checkpoint", Namespace: "team-a", SourceInstanceID: instance.GetId(), UserID: "alice", RequestID: "external-checkpoint-request",
+	}); !errors.Is(err, dbpkg.ErrAgentInstanceSnapshotUnsupported) {
+		t.Fatalf("ExternalSlot checkpoint error = %v", err)
+	}
+
+	conflicting := revision
+	conflicting.Placement = dbpkg.RuntimeRevisionPlacementKubernetesPod
+	if err := client.UpsertRuntimeRevision(ctx, conflicting); !errors.Is(err, dbpkg.ErrRuntimeRevisionConflict) {
+		t.Fatalf("placement collision error = %v", err)
+	}
+	stored, err = client.GetRuntimeRevision(ctx, revision.Revision)
+	if err != nil || stored.Placement != dbpkg.RuntimeRevisionPlacementExternalSlot {
+		t.Fatalf("placement changed after collision: revision=%+v error=%v", stored, err)
+	}
+
+	legacy := revision
+	legacy.Revision = "revision-legacy"
+	legacy.ActorTemplateName = "assistant-legacy-revision"
+	legacy.Placement = ""
+	if err := client.UpsertRuntimeRevision(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = client.GetRuntimeRevision(ctx, legacy.Revision)
+	if err != nil || stored.Placement != dbpkg.RuntimeRevisionPlacementKubernetesPod {
+		t.Fatalf("legacy placement = %+v, error=%v", stored, err)
+	}
+
+	invalid := revision
+	invalid.Revision = "revision-invalid"
+	invalid.ActorTemplateName = "assistant-invalid-revision"
+	invalid.Placement = dbpkg.RuntimeRevisionPlacement("NativeProcess")
+	if err := client.UpsertRuntimeRevision(ctx, invalid); err == nil {
+		t.Fatal("invalid placement was accepted")
+	}
+}
+
 func newAgentInstanceTask(id, messageID string) *a2a.Task {
 	now := time.Now()
 	return &a2a.Task{
