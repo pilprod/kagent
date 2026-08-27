@@ -254,14 +254,20 @@ type AgentTemplateHarnessPair struct {
 }
 
 type RuntimeRevision struct {
-	Revision               string
-	Namespace              string
-	AgentTemplateName      string
-	AgentTemplateUID       string
-	HarnessName            string
-	HarnessUID             string
-	SourceSnapshot         json.RawMessage
-	AgentCard              json.RawMessage
+	Revision          string
+	Namespace         string
+	AgentTemplateName string
+	AgentTemplateUID  string
+	HarnessName       string
+	HarnessUID        string
+	SourceSnapshot    json.RawMessage
+	AgentCard         json.RawMessage
+	// MCPPolicy is private control-plane authorization data. It is persisted
+	// atomically with the immutable revision and never materialized into the
+	// ActorTemplate or public AgentCard. A nil value is accepted only for
+	// mixed-version compatibility and is normalized to the explicit deny-all
+	// v1 policy at the PostgreSQL boundary.
+	MCPPolicy              json.RawMessage
 	EgressDestinations     []string
 	ActorTemplateNamespace string
 	ActorTemplateName      string

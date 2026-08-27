@@ -620,7 +620,7 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 			tool, toolserver, lg_checkpoint, lg_checkpoint_write,
 			crewai_agent_memory, crewai_flow_state, memory,
 			session_share, session_share_access,
-			agent_instance_share,
+			mcp_relay_grant, agent_instance_share,
 			agent_instance, a2a_context, agent_template_harness_pair, runtime_revision
 		RESTART IDENTITY CASCADE
 	`)
