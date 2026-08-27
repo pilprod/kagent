@@ -31,8 +31,9 @@ var (
 // to a verifier. The plaintext capability remains outside persistence APIs.
 type CapabilityDigest [sha256.Size]byte
 
-// Grant is the verified scope of one short-lived capability. BindingID is
-// content-addressed over server identity and its exact tool allowlist.
+// Grant is the verified scope of one short-lived capability. BindingID
+// content-addresses only the non-secret subject/server UID/tool selection; the
+// revision's private policy separately pins the server specification hash.
 type Grant struct {
 	AgentInstanceID string
 	Revision        string

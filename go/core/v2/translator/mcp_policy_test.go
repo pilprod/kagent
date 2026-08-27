@@ -75,3 +75,37 @@ func TestDecodeMCPPolicyV1RejectsNonStrictJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPBindingIDExcludesPrivateServerSpecHash(t *testing.T) {
+	first := testMCPPolicyV1(t).Bindings[0]
+	second := first
+	second.Server.SpecHash = strings.Repeat("b", 64)
+	secondID, err := mcpBindingID(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondID != first.ID {
+		t.Fatalf("private spec hash changed runtime-visible grant ID: %q != %q", secondID, first.ID)
+	}
+	second.ID = secondID
+	if err := (MCPPolicyV1{Version: MCPPolicyVersionV1, Bindings: []MCPPolicyBinding{second}}).Validate(); err != nil {
+		t.Fatalf("policy with independently pinned private spec hash is invalid: %v", err)
+	}
+}
+
+func TestCloneMCPPolicyDoesNotAliasNestedSlices(t *testing.T) {
+	original := testMCPPolicyV1(t)
+	cloned := cloneMCPPolicy(original)
+	cloned.Bindings[0].SubjectPath[0] = "changed"
+	cloned.Bindings[0].Tools[0] = "changed"
+	cloned.Bindings = append(cloned.Bindings, MCPPolicyBinding{})
+	if got := original.Bindings[0].SubjectPath[0]; got != "root" {
+		t.Fatalf("original subject path changed through clone: %q", got)
+	}
+	if got := original.Bindings[0].Tools[0]; got != "search" {
+		t.Fatalf("original tools changed through clone: %q", got)
+	}
+	if len(original.Bindings) != 1 {
+		t.Fatalf("original bindings length = %d, want 1", len(original.Bindings))
+	}
+}

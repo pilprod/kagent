@@ -150,10 +150,22 @@ func relayTestBinding(tools ...string) translator.MCPPolicyBinding {
 		Tools: tools,
 	}
 	raw, err := json.Marshal(struct {
-		SubjectPath []string                     `json:"subjectPath"`
-		Server      translator.MCPServerIdentity `json:"server"`
-		Tools       []string                     `json:"tools"`
-	}{binding.SubjectPath, binding.Server, binding.Tools})
+		SubjectPath []string `json:"subjectPath"`
+		Server      struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+			UID       string `json:"uid"`
+		} `json:"server"`
+		Tools []string `json:"tools"`
+	}{
+		SubjectPath: binding.SubjectPath,
+		Server: struct {
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+			UID       string `json:"uid"`
+		}{Namespace: binding.Server.Namespace, Name: binding.Server.Name, UID: binding.Server.UID},
+		Tools: binding.Tools,
+	})
 	if err != nil {
 		panic(err)
 	}

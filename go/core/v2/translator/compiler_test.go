@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kagent-dev/kagent/go/api/adk"
@@ -144,10 +145,7 @@ func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
 	require.NoError(t, v1alpha3.AddToScheme(schemev1.Scheme))
 	rootServer := remoteMCPServer("source", "https://private.source.example/mcp")
 	rootServer.Spec.HeadersFrom = []v1alpha3.ValueRef{{
-		Name: "Authorization",
-		ValueFrom: &v1alpha3.ValueSource{
-			Type: v1alpha3.SecretValueSource, Name: "source-token", Key: "token",
-		},
+		Name: "Authorization", Value: "Bearer first-private-value",
 	}}
 	childServer := remoteMCPServer("knowledge", "https://private.knowledge.example/mcp")
 	child := &v1alpha3.AgentTemplate{
@@ -210,7 +208,7 @@ func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
 	privatePolicy, err := json.Marshal(revision.MCPPolicy)
 	require.NoError(t, err)
 	for _, forbidden := range []string{
-		rootServer.Spec.URL, childServer.Spec.URL, "Authorization", "source-token", "token",
+		rootServer.Spec.URL, childServer.Spec.URL, "Authorization", "first-private-value",
 	} {
 		require.NotContains(t, string(privatePolicy), forbidden)
 	}
@@ -220,6 +218,16 @@ func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
 		require.NotContains(t, string(revision.ConfigJSON), binding.Server.SpecHash)
 	}
 
+	// A HarnessCompiler may retain its input. Mutating that retained private
+	// policy after Compile returns must not alter the immutable Revision.
+	adapter.input.MCPPolicy.Bindings[0].SubjectPath[0] = "mutated"
+	adapter.input.MCPPolicy.Bindings[0].Tools[0] = "mutated"
+	adapter.input.MCPPolicy.Bindings[0].Server.SpecHash = strings.Repeat("f", 64)
+	afterMutation, err := json.Marshal(revision.MCPPolicy)
+	require.NoError(t, err)
+	require.Equal(t, privatePolicy, afterMutation)
+	require.NoError(t, revision.MCPPolicy.Validate())
+
 	reordered := root.DeepCopy()
 	reordered.Spec.Tools[0].MCP.Tools = []string{"read", "write"}
 	second, err := compile.CompileAgentTemplate(context.Background(), harness, reordered)
@@ -227,7 +235,7 @@ func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
 	require.Equal(t, revision.MCPPolicy, second.MCPPolicy)
 
 	changedRootServer := rootServer.DeepCopy()
-	changedRootServer.Spec.URL = "https://rotated.source.example/mcp"
+	changedRootServer.Spec.HeadersFrom[0].Value = "Bearer second-private-value"
 	changedKube := fake.NewClientBuilder().WithScheme(schemev1.Scheme).WithObjects(modelConfig(), changedRootServer, childServer, child).Build()
 	changed, err := v2translator.NewCompiler(testReader{changedKube}, map[v2translator.HarnessType]v2translator.HarnessCompiler{
 		v2translator.HarnessTypeCodex: &testHarnessCompiler{},
@@ -237,7 +245,8 @@ func TestCompilerBuildsCanonicalPrivateMCPPolicy(t *testing.T) {
 	for _, binding := range changed.MCPPolicy.Bindings {
 		changedByServer[binding.Server.Name] = binding
 	}
-	require.NotEqual(t, byServer[rootServer.Name].ID, changedByServer[rootServer.Name].ID)
+	require.Equal(t, byServer[rootServer.Name].ID, changedByServer[rootServer.Name].ID)
+	require.NotEqual(t, byServer[rootServer.Name].Server.SpecHash, changedByServer[rootServer.Name].Server.SpecHash)
 	firstDigest, err := revision.Digest()
 	require.NoError(t, err)
 	changedDigest, err := changed.Digest()
