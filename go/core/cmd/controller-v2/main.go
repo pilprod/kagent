@@ -43,6 +43,8 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/checkpoint"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
 	v2mcp "github.com/kagent-dev/kagent/go/core/v2/mcp"
+	"github.com/kagent-dev/kagent/go/core/v2/mcprelay"
+	"github.com/kagent-dev/kagent/go/core/v2/mcprelaytransport"
 	"golang.org/x/sync/errgroup"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -134,6 +136,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	relayStore := database.NewMCPRelayStore(db)
+	relayUpstream, err := mcprelay.NewKubernetesUpstream(manager.GetAPIReader(), manager.GetClient())
+	if err != nil {
+		log.Fatal(err)
+	}
+	relayEngine, err := mcprelay.New(mcprelay.Config{
+		Policies: relayStore, Grants: relayStore, Lifecycles: relayStore, Upstream: relayUpstream,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	relayHandler, err := mcprelaytransport.New(relayEngine)
+	if err != nil {
+		log.Fatal(err)
+	}
 	server, err := grpcserver.New(grpcserver.Config{
 		BindAddress:          env("GRPC_BIND_ADDRESS", ":8084"),
 		Reflection:           envBool("GRPC_REFLECTION"),
@@ -153,7 +170,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// The HTTP port serves health *and* gRPC-Web, because a browser cannot speak
+	// The public HTTP port serves health *and* gRPC-Web, because a browser cannot speak
 	// gRPC and this is the only port a page can reach: the chart's nginx proxies
 	// /api here, while :8084 speaks native gRPC that `fetch` has no way to talk to.
 	//
@@ -161,14 +178,19 @@ func main() {
 	// It answered every path with an empty 200 and ignored the request entirely, so
 	// a browser calling an RPC got a success with no body — which reads as a
 	// serialisation fault in the client rather than as a server that never had the
-	// endpoint. The router below serves MCP and hands other non-gRPC-Web requests
-	// to the same health response as before.
+	// endpoint. The capability-authenticated runtime relay is deliberately absent
+	// from this listener and runs on a separate, cluster-private port.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.Handle("/mcp", auth.AuthnMiddleware(authenticator)(mcpHandler))
 	health := &http.Server{Addr: env("HTTP_BIND_ADDRESS", ":8083"), Handler: server.WebHandlerOr(mux)}
+	relayHTTP := &http.Server{
+		Addr: env("MCP_RELAY_BIND_ADDRESS", ":8085"), Handler: relayHandler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
+		IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10,
+	}
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runtime.Start(ctx) })
 	group.Go(func() error { return manager.Start(ctx) })
@@ -180,6 +202,16 @@ func main() {
 		}()
 		if err := health.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("serve health endpoint: %w", err)
+		}
+		return nil
+	})
+	group.Go(func() error {
+		go func() {
+			<-ctx.Done()
+			_ = relayHTTP.Shutdown(context.Background())
+		}()
+		if err := relayHTTP.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("serve private MCP relay: %w", err)
 		}
 		return nil
 	})
