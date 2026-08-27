@@ -9,15 +9,18 @@ import (
 )
 
 func TestDecodeRejectsAmbiguousAndUnknownJSON(t *testing.T) {
-	valid := `{"version":"v1","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`
+	valid := `{"version":"v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`
 	config, err := Decode([]byte(valid))
 	require.NoError(t, err)
 	require.Equal(t, RuntimeCodex, config.Runtime)
 
-	_, err = Decode([]byte(`{"version":"v1","version":"v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`))
+	_, err = Decode([]byte(`{"version":"v2","version":"v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`))
 	require.ErrorContains(t, err, `duplicate key "version"`)
 
-	_, err = Decode([]byte(`{"version":"v1","runtime":"codex","credential":"secret","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`))
+	_, err = Decode([]byte(`{"version":"v2","runtime":"codex","credential":"secret","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`))
+	require.ErrorContains(t, err, "unknown field")
+
+	_, err = Decode([]byte(`{"version":"v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"},"mcpGrants":[{"id":"mcp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tools":["lookup"],"url":"https://private.example/mcp","capability":"secret"}]}}`))
 	require.ErrorContains(t, err, "unknown field")
 
 	_, err = Decode(append([]byte(valid), []byte(` {}`)...))
@@ -38,10 +41,7 @@ func TestConfigValidationPinsRuntimeAndImmutableSources(t *testing.T) {
 		Root: AgentConfig{
 			TemplateName: "assistant",
 			Model:        ModelConfig{Provider: "OpenAI", Name: "gpt-5", ReasoningEffort: "high"},
-			MCPServers: []MCPBinding{{
-				Server: "github", Tools: []string{"get_issue"},
-				Connection: MCPConnection{Transport: "STREAMABLE_HTTP", URL: "https://mcp.example.com/mcp"},
-			}},
+			MCPGrants:    []MCPGrant{{ID: "mcp-" + strings.Repeat("a", 64), Tools: []string{"get_issue"}}},
 			Skills: []Skill{{Name: "review", Source: ArtifactSource{
 				OCI: "ghcr.io/acme/review@sha256:" + strings.Repeat("a", 64),
 			}}},
@@ -56,9 +56,18 @@ func TestConfigValidationPinsRuntimeAndImmutableSources(t *testing.T) {
 	require.ErrorContains(t, mutable.Validate(), "full commit")
 
 	duplicateTool := config
-	duplicateTool.Root.MCPServers = append([]MCPBinding(nil), config.Root.MCPServers...)
-	duplicateTool.Root.MCPServers[0].Tools = []string{"get_issue", "get_issue"}
+	duplicateTool.Root.MCPGrants = append([]MCPGrant(nil), config.Root.MCPGrants...)
+	duplicateTool.Root.MCPGrants[0].Tools = []string{"get_issue", "get_issue"}
 	require.ErrorContains(t, duplicateTool.Validate(), "sorted and unique")
+
+	duplicateAcrossAgents := config
+	duplicateAcrossAgents.Root.SharedAgents = []SharedBinding{{
+		Name: "helper", Description: "helper", Agent: AgentConfig{
+			TemplateName: "helper", Model: ModelConfig{Provider: "OpenAI", Name: "gpt-5"},
+			MCPGrants: []MCPGrant{{ID: config.Root.MCPGrants[0].ID, Tools: []string{"get_issue"}}},
+		},
+	}}
+	require.ErrorContains(t, duplicateAcrossAgents.Validate(), "duplicates a grant owned by agent")
 
 	claude := config
 	claude.Runtime = RuntimeClaude
@@ -95,18 +104,12 @@ func TestConfigValidationBoundsRuntimeIdentifiers(t *testing.T) {
 	}{
 		{name: "template", mutate: func(config *Config) { config.Root.TemplateName = strings.Repeat("a", 254) }, want: "valid Kubernetes object name"},
 		{name: "model", mutate: func(config *Config) { config.Root.Model.Name = strings.Repeat("m", 257) }, want: "between 1 and 256 bytes"},
-		{name: "MCP server", mutate: func(config *Config) {
-			config.Root.MCPServers = []MCPBinding{{
-				Server: strings.Repeat("s", 254), Tools: []string{"lookup"},
-				Connection: MCPConnection{Transport: "STREAMABLE_HTTP", URL: "https://mcp.example.com"},
-			}}
-		}, want: "valid Kubernetes object name"},
+		{name: "MCP grant", mutate: func(config *Config) {
+			config.Root.MCPGrants = []MCPGrant{{ID: "mcp-not-a-digest", Tools: []string{"lookup"}}}
+		}, want: "MCP grant ID"},
 		{name: "MCP tool", mutate: func(config *Config) {
-			config.Root.MCPServers = []MCPBinding{{
-				Server: "search", Tools: []string{strings.Repeat("t", 257)},
-				Connection: MCPConnection{Transport: "STREAMABLE_HTTP", URL: "https://mcp.example.com"},
-			}}
-		}, want: "between 1 and 256 bytes"},
+			config.Root.MCPGrants = []MCPGrant{{ID: "mcp-" + strings.Repeat("a", 64), Tools: []string{strings.Repeat("t", 129)}}}
+		}, want: "between 1 and 128 bytes"},
 		{name: "Shared binding", mutate: func(config *Config) {
 			config.Root.SharedAgents = []SharedBinding{{
 				Name: strings.Repeat("b", 129), Description: "child", Agent: AgentConfig{
@@ -124,11 +127,11 @@ func TestConfigValidationBoundsRuntimeIdentifiers(t *testing.T) {
 }
 
 func TestDecodeRequiresCanonicalOrdering(t *testing.T) {
-	unsorted := `{"version":"v1","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"},"mcpServers":[{"server":"zeta","tools":["z","a"],"connection":{"transport":"STREAMABLE_HTTP","url":"https://z.example.com"}},{"server":"alpha","tools":["a"],"connection":{"transport":"SSE","url":"https://a.example.com"}}]}}`
+	unsorted := `{"version":"v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"},"mcpGrants":[{"id":"mcp-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tools":["z","a"]},{"id":"mcp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tools":["a"]}]}}`
 	_, err := Decode([]byte(unsorted))
 	require.ErrorContains(t, err, "sorted and unique")
 
-	whitespace := `{"version": "v1","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`
+	whitespace := `{"version": "v2","runtime":"codex","root":{"templateName":"assistant","model":{"provider":"OpenAI","name":"gpt-5"}}}`
 	_, err = Decode([]byte(whitespace))
 	require.ErrorContains(t, err, "not canonical JSON")
 

@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -18,7 +17,7 @@ import (
 const (
 	// ConfigVersion identifies the JSON contract shared by the controller and
 	// pinned coding-agent runtime images.
-	ConfigVersion = "v1"
+	ConfigVersion = "v2"
 	// MaxConfigBytes stays below Linux's per-environment-entry limit because
 	// Substrate currently injects ConfigJSON through one environment variable.
 	MaxConfigBytes = 96 << 10
@@ -48,7 +47,7 @@ type AgentConfig struct {
 	Description  string          `json:"description,omitempty"`
 	Instruction  string          `json:"instruction,omitempty"`
 	Model        ModelConfig     `json:"model"`
-	MCPServers   []MCPBinding    `json:"mcpServers,omitempty"`
+	MCPGrants    []MCPGrant      `json:"mcpGrants,omitempty"`
 	Skills       []Skill         `json:"skills,omitempty"`
 	Plugins      []Plugin        `json:"plugins,omitempty"`
 	SharedAgents []SharedBinding `json:"sharedAgents,omitempty"`
@@ -62,22 +61,13 @@ type ModelConfig struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
-// MCPBinding separates portable AgentTemplate intent from the connection the
-// in-cluster adapter will materialize. A future relay can replace Connection
-// without changing Server or Tools.
-type MCPBinding struct {
-	Server     string        `json:"server"`
-	Tools      []string      `json:"tools"`
-	Connection MCPConnection `json:"connection"`
-}
-
-// MCPConnection contains non-credential RemoteMCPServer connection settings.
-type MCPConnection struct {
-	Transport        string `json:"transport"`
-	URL              string `json:"url"`
-	Timeout          string `json:"timeout,omitempty"`
-	SSEReadTimeout   string `json:"sseReadTimeout,omitempty"`
-	TerminateOnClose *bool  `json:"terminateOnClose,omitempty"`
+// MCPGrant is a logical, content-addressed grant reference exposed through the
+// local host's loopback MCP proxy. It contains neither an upstream URL nor a
+// credential. The host receives a short-lived bearer capability separately
+// over the authenticated Substrate assignment channel.
+type MCPGrant struct {
+	ID    string   `json:"id"`
+	Tools []string `json:"tools"`
 }
 
 // Skill selects one standalone skill from an immutable artifact.
@@ -134,6 +124,7 @@ var (
 	ociDigestPattern    = regexp.MustCompile(`^[^\s@]+@sha256:[0-9a-f]{64}$`)
 	templateNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$`)
 	runtimeNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+	mcpGrantIDPattern   = regexp.MustCompile(`^mcp-[0-9a-f]{64}$`)
 )
 
 // Decode strictly decodes and validates one runtime config document.
@@ -181,13 +172,13 @@ func (c *Config) Validate() error {
 	if c.Runtime != RuntimeCodex && c.Runtime != RuntimeClaude {
 		return fmt.Errorf("unsupported coding-agent runtime %q", c.Runtime)
 	}
-	if err := validateAgent(c.Runtime, &c.Root, 0); err != nil {
+	if err := validateAgent(c.Runtime, &c.Root, 0, make(map[string]string)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateAgent(runtime Runtime, agent *AgentConfig, depth int) error {
+func validateAgent(runtime Runtime, agent *AgentConfig, depth int, seenGrantIDs map[string]string) error {
 	if depth > maxAgentDepth {
 		return fmt.Errorf("shared agent depth exceeds %d", maxAgentDepth)
 	}
@@ -218,53 +209,28 @@ func validateAgent(runtime Runtime, agent *AgentConfig, depth int) error {
 		return fmt.Errorf("agent %q has invalid reasoningEffort %q", agent.TemplateName, agent.Model.ReasoningEffort)
 	}
 
-	servers := map[string]struct{}{}
-	for i := range agent.MCPServers {
-		binding := &agent.MCPServers[i]
-		if len(binding.Server) > 253 || !templateNamePattern.MatchString(binding.Server) {
-			return fmt.Errorf("agent %q MCP server name %q is not a valid Kubernetes object name", agent.TemplateName, binding.Server)
+	for i := range agent.MCPGrants {
+		grant := &agent.MCPGrants[i]
+		if !mcpGrantIDPattern.MatchString(grant.ID) {
+			return fmt.Errorf("agent %q MCP grant ID %q is invalid", agent.TemplateName, grant.ID)
 		}
-		if i > 0 && agent.MCPServers[i-1].Server >= binding.Server {
-			return fmt.Errorf("agent %q MCP servers must be sorted and unique", agent.TemplateName)
+		if i > 0 && agent.MCPGrants[i-1].ID >= grant.ID {
+			return fmt.Errorf("agent %q MCP grants must be sorted and unique", agent.TemplateName)
 		}
-		if _, exists := servers[binding.Server]; exists {
-			return fmt.Errorf("agent %q has duplicate MCP server %q", agent.TemplateName, binding.Server)
+		if owner, duplicate := seenGrantIDs[grant.ID]; duplicate {
+			return fmt.Errorf("agent %q MCP grant %q duplicates a grant owned by agent %q", agent.TemplateName, grant.ID, owner)
 		}
-		servers[binding.Server] = struct{}{}
-		if binding.Connection.Transport != "STREAMABLE_HTTP" && binding.Connection.Transport != "SSE" {
-			return fmt.Errorf("agent %q MCP server %q has unsupported transport %q", agent.TemplateName, binding.Server, binding.Connection.Transport)
+		seenGrantIDs[grant.ID] = agent.TemplateName
+		if len(grant.Tools) == 0 {
+			return fmt.Errorf("agent %q MCP grant %q requires an explicit tool allowlist", agent.TemplateName, grant.ID)
 		}
-		if err := validateHTTPURL(binding.Connection.URL); err != nil {
-			return fmt.Errorf("agent %q MCP server %q URL: %w", agent.TemplateName, binding.Server, err)
-		}
-		for _, durationField := range []struct {
-			name  string
-			value string
-		}{{name: "timeout", value: binding.Connection.Timeout}, {name: "sseReadTimeout", value: binding.Connection.SSEReadTimeout}} {
-			field, value := durationField.name, durationField.value
-			if value == "" {
-				continue
+		for toolIndex, tool := range grant.Tools {
+			if err := validateMCPToolName(tool); err != nil {
+				return fmt.Errorf("agent %q MCP grant %q tool name: %w", agent.TemplateName, grant.ID, err)
 			}
-			duration, err := time.ParseDuration(value)
-			if err != nil || duration <= 0 {
-				return fmt.Errorf("agent %q MCP server %q %s must be a positive duration", agent.TemplateName, binding.Server, field)
+			if toolIndex > 0 && grant.Tools[toolIndex-1] >= tool {
+				return fmt.Errorf("agent %q MCP grant %q tools must be sorted and unique", agent.TemplateName, grant.ID)
 			}
-		}
-		if len(binding.Tools) == 0 {
-			return fmt.Errorf("agent %q MCP server %q requires an explicit tool allowlist", agent.TemplateName, binding.Server)
-		}
-		seenTools := map[string]struct{}{}
-		for toolIndex, tool := range binding.Tools {
-			if err := validateIdentifier(tool, 256); err != nil {
-				return fmt.Errorf("agent %q MCP server %q tool name: %w", agent.TemplateName, binding.Server, err)
-			}
-			if toolIndex > 0 && binding.Tools[toolIndex-1] >= tool {
-				return fmt.Errorf("agent %q MCP server %q tools must be sorted and unique", agent.TemplateName, binding.Server)
-			}
-			if _, exists := seenTools[tool]; exists {
-				return fmt.Errorf("agent %q MCP server %q contains duplicate tool %q", agent.TemplateName, binding.Server, tool)
-			}
-			seenTools[tool] = struct{}{}
 		}
 	}
 
@@ -329,7 +295,7 @@ func validateAgent(runtime Runtime, agent *AgentConfig, depth int) error {
 			return fmt.Errorf("agent %q has duplicate Shared binding %q", agent.TemplateName, binding.Name)
 		}
 		bindings[binding.Name] = struct{}{}
-		if err := validateAgent(runtime, &binding.Agent, depth+1); err != nil {
+		if err := validateAgent(runtime, &binding.Agent, depth+1, seenGrantIDs); err != nil {
 			return err
 		}
 	}
@@ -395,6 +361,20 @@ func validateIdentifier(value string, maximum int) error {
 	}
 	if strings.IndexFunc(value, func(r rune) bool { return unicode.IsControl(r) || unicode.IsSpace(r) }) >= 0 {
 		return fmt.Errorf("must not contain control or whitespace characters")
+	}
+	return nil
+}
+
+func validateMCPToolName(value string) error {
+	if value == "" || len(value) > 128 {
+		return fmt.Errorf("must be between 1 and 128 bytes")
+	}
+	for _, character := range value {
+		valid := (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_' || character == '.'
+		if !valid {
+			return fmt.Errorf("contains invalid characters")
+		}
 	}
 	return nil
 }

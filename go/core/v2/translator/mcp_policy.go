@@ -41,8 +41,9 @@ type MCPPolicyV1 struct {
 }
 
 // MCPPolicyBinding grants one runtime subject an exact tool set on one
-// RemoteMCPServer. ID is content-addressed so callers cannot substitute a
-// server while retaining a valid binding identifier.
+// RemoteMCPServer. ID content-addresses the non-secret logical binding. The
+// private Server.SpecHash separately pins connection material inside the
+// revision and is intentionally excluded from the runtime-visible ID.
 type MCPPolicyBinding struct {
 	ID          string            `json:"id"`
 	SubjectPath []string          `json:"subjectPath"`
@@ -60,9 +61,22 @@ type MCPServerIdentity struct {
 }
 
 type mcpBindingIdentity struct {
-	SubjectPath []string          `json:"subjectPath"`
-	Server      MCPServerIdentity `json:"server"`
-	Tools       []string          `json:"tools"`
+	SubjectPath []string               `json:"subjectPath"`
+	Server      mcpGrantServerIdentity `json:"server"`
+	Tools       []string               `json:"tools"`
+}
+
+// mcpGrantServerIdentity deliberately excludes SpecHash. The public grant ID
+// is visible to an external runtime, while SpecHash commits to private
+// RemoteMCPServer connection material and may include literal credentials.
+// Hashing SpecHash into the grant ID would give the runtime an offline oracle
+// for guessed secret values. The private revision policy still pins SpecHash;
+// the ID addresses only the logical subject/server/tool binding within that
+// revision.
+type mcpGrantServerIdentity struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid"`
 }
 
 // DecodeMCPPolicyV1 strictly decodes persisted private policy. It rejects
@@ -297,12 +311,34 @@ func MCPServerSpecHash(spec v1alpha3.RemoteMCPServerSpec) (string, error) {
 }
 
 func mcpBindingID(binding MCPPolicyBinding) (string, error) {
-	raw, err := json.Marshal(mcpBindingIdentity{SubjectPath: binding.SubjectPath, Server: binding.Server, Tools: binding.Tools})
+	raw, err := json.Marshal(mcpBindingIdentity{
+		SubjectPath: binding.SubjectPath,
+		Server: mcpGrantServerIdentity{
+			Namespace: binding.Server.Namespace,
+			Name:      binding.Server.Name,
+			UID:       binding.Server.UID,
+		},
+		Tools: binding.Tools,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal MCP binding identity: %w", err)
 	}
 	digest := sha256.Sum256(raw)
 	return mcpBindingIDPrefix + hex.EncodeToString(digest[:]), nil
+}
+
+func cloneMCPPolicy(policy MCPPolicyV1) MCPPolicyV1 {
+	clone := MCPPolicyV1{Version: policy.Version}
+	if policy.Bindings == nil {
+		return clone
+	}
+	clone.Bindings = make([]MCPPolicyBinding, len(policy.Bindings))
+	for index, binding := range policy.Bindings {
+		clone.Bindings[index] = binding
+		clone.Bindings[index].SubjectPath = slices.Clone(binding.SubjectPath)
+		clone.Bindings[index].Tools = slices.Clone(binding.Tools)
+	}
+	return clone
 }
 
 // Validate rejects non-canonical or tampered persisted policies before the
