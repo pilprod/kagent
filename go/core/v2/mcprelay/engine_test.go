@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,8 +70,8 @@ func (s *fakeLifecycleStore) MCPInstanceLifecycle(ctx context.Context, id string
 }
 
 type listInvocation struct {
-	target UpstreamTarget
-	cursor string
+	target  UpstreamTarget
+	cursors []string
 }
 
 type callInvocation struct {
@@ -81,6 +82,7 @@ type callInvocation struct {
 
 type fakeUpstream struct {
 	pages      map[string]ToolPage
+	list       func(context.Context, UpstreamTarget, func(ToolPage) error) error
 	listErr    error
 	callResult *mcp.CallToolResult
 	callErr    error
@@ -88,9 +90,27 @@ type fakeUpstream struct {
 	calls      []callInvocation
 }
 
-func (u *fakeUpstream) ListTools(_ context.Context, target UpstreamTarget, cursor string) (ToolPage, error) {
-	u.lists = append(u.lists, listInvocation{target: target, cursor: cursor})
-	return u.pages[cursor], u.listErr
+func (u *fakeUpstream) ListTools(ctx context.Context, target UpstreamTarget, yield func(ToolPage) error) error {
+	u.lists = append(u.lists, listInvocation{target: target})
+	invocation := &u.lists[len(u.lists)-1]
+	if u.listErr != nil {
+		return u.listErr
+	}
+	if u.list != nil {
+		return u.list(ctx, target, yield)
+	}
+	cursor := ""
+	for {
+		invocation.cursors = append(invocation.cursors, cursor)
+		page := u.pages[cursor]
+		if err := yield(page); err != nil {
+			return err
+		}
+		if page.NextCursor == "" {
+			return nil
+		}
+		cursor = page.NextCursor
+	}
 }
 
 func (u *fakeUpstream) CallTool(
@@ -193,7 +213,8 @@ func TestListToolsFiltersAndConsumesUpstreamPages(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "admin")
 	require.NotContains(t, string(raw), "cluster.internal")
-	require.Equal(t, []string{"", "next-page"}, []string{f.upstream.lists[0].cursor, f.upstream.lists[1].cursor})
+	require.Len(t, f.upstream.lists, 1)
+	require.Equal(t, []string{"", "next-page"}, f.upstream.lists[0].cursors)
 	for _, call := range f.upstream.lists {
 		require.Equal(t, UpstreamTarget{
 			AgentInstanceID: testInstanceID,
@@ -433,7 +454,7 @@ func TestListToolsAcceptsOpaqueUnicodeWhitespaceCursor(t *testing.T) {
 	tools, err := f.engine.ListTools(context.Background(), f.capability, f.binding.ID)
 	require.NoError(t, err)
 	require.Equal(t, "read", tools[0].Name)
-	require.Equal(t, cursor, f.upstream.lists[1].cursor)
+	require.Equal(t, []string{"", cursor}, f.upstream.lists[0].cursors)
 }
 
 func TestListToolsRejectsInvalidOpaqueCursor(t *testing.T) {
@@ -452,6 +473,55 @@ func TestListToolsRejectsInvalidOpaqueCursor(t *testing.T) {
 			f := newFixture(t, "read")
 			f.upstream.pages[""] = ToolPage{NextCursor: test.cursor}
 			_, err := f.engine.ListTools(context.Background(), f.capability, f.binding.ID)
+			require.ErrorIs(t, err, ErrUpstream)
+			require.Len(t, f.upstream.lists, 1)
+			require.Len(t, f.upstream.lists[0].cursors, 1)
+		})
+	}
+}
+
+func TestListToolsRejectsInvalidPageStream(t *testing.T) {
+	tests := []struct {
+		name string
+		list func(func(ToolPage) error) error
+	}{
+		{
+			name: "no terminal page",
+			list: func(func(ToolPage) error) error { return nil },
+		},
+		{
+			name: "page after terminal page",
+			list: func(yield func(ToolPage) error) error {
+				if err := yield(ToolPage{Tools: []*mcp.Tool{validTool("read")}}); err != nil {
+					return err
+				}
+				return yield(ToolPage{})
+			},
+		},
+		{
+			name: "page count exceeds bound",
+			list: func(yield func(ToolPage) error) error {
+				for page := 0; page <= maxUpstreamPages; page++ {
+					nextCursor := ""
+					if page < maxUpstreamPages {
+						nextCursor = "page-" + strconv.Itoa(page+1)
+					}
+					if err := yield(ToolPage{NextCursor: nextCursor}); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t, "read")
+			f.upstream.list = func(_ context.Context, _ UpstreamTarget, yield func(ToolPage) error) error {
+				return test.list(yield)
+			}
+			_, err := f.engine.ListTools(t.Context(), f.capability, f.binding.ID)
 			require.ErrorIs(t, err, ErrUpstream)
 			require.Len(t, f.upstream.lists, 1)
 		})
@@ -529,8 +599,8 @@ type cancelingUpstream struct {
 	entered chan struct{}
 }
 
-func (u *cancelingUpstream) ListTools(context.Context, UpstreamTarget, string) (ToolPage, error) {
-	return ToolPage{}, errors.New("not used")
+func (u *cancelingUpstream) ListTools(context.Context, UpstreamTarget, func(ToolPage) error) error {
+	return errors.New("not used")
 }
 
 func (u *cancelingUpstream) CallTool(
