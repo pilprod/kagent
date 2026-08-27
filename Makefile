@@ -340,6 +340,10 @@ helm-test: helm-version
 	helm plugin ls | grep unittest || helm plugin install https://github.com/helm-unittest/helm-unittest.git
 	helm unittest helm/kagent
 
+.PHONY: verify-kagent-external-static-tls
+verify-kagent-external-static-tls: ## Verify the GKE-compatible existing-Secret Substrate TLS profile
+	./scripts/verify-kagent-external-static-tls.sh
+
 .PHONY: helm-tools
 helm-tools: ## Package all tool Helm charts into the dist folder
 	VERSION=$(VERSION) envsubst < helm/tools/grafana-mcp/Chart-template.yaml > helm/tools/grafana-mcp/Chart.yaml

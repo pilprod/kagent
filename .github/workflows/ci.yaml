@@ -344,6 +344,7 @@ jobs:
         run: |
           helm unittest helm/kagent
           helm unittest helm/tools/grafana-mcp
+          ./scripts/verify-kagent-external-static-tls.sh
 
   ui-tests:
     runs-on: ubuntu-latest

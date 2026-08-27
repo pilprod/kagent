@@ -1,3 +1,4 @@
+{{- include "kagent.controller.substrate.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,7 +34,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with (.Values.controller.podSecurityContext | default .Values.podSecurityContext) }}
+      {{- $controllerPodSecurityContext := (.Values.controller.podSecurityContext | default .Values.podSecurityContext) }}
+      {{- if and .Values.controller.substrate .Values.controller.substrate.enabled (eq (.Values.controller.substrate.tls.mode | default "projected") "existingSecret") }}
+      {{- $controllerPodSecurityContext = mergeOverwrite (dict "fsGroup" 65532) (deepCopy $controllerPodSecurityContext) }}
+      {{- end }}
+      {{- with $controllerPodSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -41,6 +46,17 @@ spec:
       {{- if or (gt (len .Values.controller.volumes) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) }}
       volumes:
       {{- if and .Values.controller.substrate .Values.controller.substrate.enabled }}
+      {{- if eq (.Values.controller.substrate.tls.mode | default "projected") "existingSecret" }}
+      - name: substrate-existing-tls
+        secret:
+          secretName: {{ .Values.controller.substrate.tls.existingSecret.name | quote }}
+          defaultMode: 0440
+          items:
+          - key: {{ .Values.controller.substrate.tls.existingSecret.serverCAKey | quote }}
+            path: server-ca.pem
+          - key: {{ .Values.controller.substrate.tls.existingSecret.clientCredentialBundleKey | quote }}
+            path: client-credential-bundle.pem
+      {{- else }}
       - name: substrate-servicedns
         projected:
           sources:
@@ -57,6 +73,7 @@ spec:
               signerName: podidentity.podcert.ate.dev/identity
               keyType: ECDSAP256
               credentialBundlePath: credential-bundle.pem
+      {{- end }}
       {{- end }}
       {{- with .Values.controller.volumes }}
       {{- toYaml . | nindent 6 }}
@@ -144,10 +161,21 @@ spec:
             {{- if and .Values.controller.substrate .Values.controller.substrate.enabled }}
             - name: SUBSTRATE_ATE_API_ENDPOINT
               value: {{ .Values.controller.substrate.ateApiEndpoint | quote }}
+            {{- with .Values.controller.substrate.tls.serverName }}
+            - name: SUBSTRATE_ATE_API_SERVER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if eq (.Values.controller.substrate.tls.mode | default "projected") "existingSecret" }}
+            - name: SUBSTRATE_ATE_API_CA_FILE
+              value: /run/substrate-existing-tls/server-ca.pem
+            - name: SUBSTRATE_ATE_API_CLIENT_CERT_FILE
+              value: /run/substrate-existing-tls/client-credential-bundle.pem
+            {{- else }}
             - name: SUBSTRATE_ATE_API_CA_FILE
               value: /run/substrate-servicedns/trust-bundle.pem
             - name: SUBSTRATE_ATE_API_CLIENT_CERT_FILE
               value: /run/substrate-podidentity/credential-bundle.pem
+            {{- end }}
             {{- with .Values.controller.substrate.atenetRouterURL }}
             - name: SUBSTRATE_ATENET_ROUTER_URL
               value: {{ . | quote }}
@@ -205,12 +233,18 @@ spec:
           {{- if or (gt (len .Values.controller.volumeMounts) 0) (and .Values.controller.substrate .Values.controller.substrate.enabled) }}
           volumeMounts:
             {{- if and .Values.controller.substrate .Values.controller.substrate.enabled }}
+            {{- if eq (.Values.controller.substrate.tls.mode | default "projected") "existingSecret" }}
+            - name: substrate-existing-tls
+              mountPath: /run/substrate-existing-tls
+              readOnly: true
+            {{- else }}
             - name: substrate-servicedns
               mountPath: /run/substrate-servicedns
               readOnly: true
             - name: substrate-podidentity
               mountPath: /run/substrate-podidentity
               readOnly: true
+            {{- end }}
             {{- end }}
             {{- with .Values.controller.volumeMounts }}
             {{- toYaml . | nindent 12 }}

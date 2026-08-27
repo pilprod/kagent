@@ -61,6 +61,57 @@ referenced by generated ActorTemplates (install namespace plus rbac.namespaces).
 {{- join "," $all -}}
 {{- end }}
 
+{{/* Validate a required Kubernetes Secret name. */}}
+{{- define "kagent.validateExistingSecretName" -}}
+{{- $path := index . 0 -}}
+{{- $value := index . 1 | default "" -}}
+{{- if or (not $value) (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" $value)) -}}
+{{- fail (printf "%s must be a valid Kubernetes Secret name" $path) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Validate a required key in a referenced Kubernetes Secret. */}}
+{{- define "kagent.validateExistingSecretKey" -}}
+{{- $path := index . 0 -}}
+{{- $value := index . 1 | default "" -}}
+{{- if or (not $value) (gt (len $value) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" $value)) -}}
+{{- fail (printf "%s must be a valid Kubernetes Secret data key" $path) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Validate the opt-in static TLS contract for the controller -> ate-api link.
+The default projected mode intentionally retains the upstream rendering.
+*/}}
+{{- define "kagent.controller.substrate.validate" -}}
+{{- if and .Values.controller.substrate .Values.controller.substrate.enabled -}}
+{{- $tls := .Values.controller.substrate.tls | default dict -}}
+{{- $mode := $tls.mode | default "projected" -}}
+{{- if not (has $mode (list "projected" "existingSecret")) -}}
+{{- fail (printf "controller.substrate.tls.mode must be one of projected or existingSecret, got %q" $mode) -}}
+{{- end -}}
+{{- if eq $mode "existingSecret" -}}
+{{- if and .Values.substrate .Values.substrate.enabled -}}
+{{- fail "substrate.enabled must be false when controller.substrate.tls.mode=existingSecret; this mode connects to an external Substrate control plane and must not render the bundled beta certificate stack" -}}
+{{- end -}}
+{{- if not .Values.controller.substrate.ateApiEndpoint -}}
+{{- fail "controller.substrate.ateApiEndpoint is required when controller.substrate.tls.mode=existingSecret" -}}
+{{- end -}}
+{{- $serverName := $tls.serverName | default "" -}}
+{{- if or (gt (len $serverName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\.svc(\\.cluster\\.local)?$" $serverName)) -}}
+{{- fail "controller.substrate.tls.serverName must be an internal Kubernetes Service DNS name (<service>.<namespace>.svc[.cluster.local])" -}}
+{{- end -}}
+{{- $secret := $tls.existingSecret | default dict -}}
+{{- include "kagent.validateExistingSecretName" (list "controller.substrate.tls.existingSecret.name" $secret.name) -}}
+{{- include "kagent.validateExistingSecretKey" (list "controller.substrate.tls.existingSecret.serverCAKey" $secret.serverCAKey) -}}
+{{- include "kagent.validateExistingSecretKey" (list "controller.substrate.tls.existingSecret.clientCredentialBundleKey" $secret.clientCredentialBundleKey) -}}
+{{- if eq $secret.serverCAKey $secret.clientCredentialBundleKey -}}
+{{- fail "controller.substrate.tls.existingSecret serverCAKey and clientCredentialBundleKey must differ so the private-key bundle is never mounted as a trust bundle" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 Watch namespaces - transforms list of namespaces cached by the controller into comma-separated string.
 Precedence: controller.watchNamespaces (explicit override) > rbac.namespaces > empty (watch all).

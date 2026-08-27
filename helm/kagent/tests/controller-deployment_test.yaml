@@ -131,7 +131,7 @@ tests:
             controller-key: "controller-value"
             shared-key: "controller-wins"
 
-  - it: should configure substrate ate-api mTLS when substrate is enabled
+  - it: should preserve projected substrate ate-api mTLS when substrate is enabled
     template: controller-deployment.yaml
     set:
       controller:
@@ -175,6 +175,102 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[1].mountPath
           value: /run/substrate-podidentity
+
+  - it: should configure GKE-compatible substrate mTLS from an existing Secret
+    template: controller-deployment.yaml
+    set:
+      controller:
+        substrate:
+          enabled: true
+          ateApiEndpoint: "dns:///api.ate-system.svc:443"
+          tls:
+            mode: existingSecret
+            serverName: api.ate-system.svc
+            existingSecret:
+              name: kagent-ate-client-tls
+              serverCAKey: ate-server-ca.pem
+              clientCredentialBundleKey: kagent-client-bundle.pem
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: substrate-existing-tls
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.volumes[0].secret.secretName
+          value: kagent-ate-client-tls
+      - equal:
+          path: spec.template.spec.volumes[0].secret.items[0]
+          value:
+            key: ate-server-ca.pem
+            path: server-ca.pem
+      - equal:
+          path: spec.template.spec.volumes[0].secret.items[1]
+          value:
+            key: kagent-client-bundle.pem
+            path: client-credential-bundle.pem
+      - notExists:
+          path: spec.template.spec.volumes[0].projected
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SUBSTRATE_ATE_API_SERVER_NAME
+            value: api.ate-system.svc
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SUBSTRATE_ATE_API_CA_FILE
+            value: /run/substrate-existing-tls/server-ca.pem
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SUBSTRATE_ATE_API_CLIENT_CERT_FILE
+            value: /run/substrate-existing-tls/client-credential-bundle.pem
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0]
+          value:
+            name: substrate-existing-tls
+            mountPath: /run/substrate-existing-tls
+            readOnly: true
+
+  - it: should reject a trust bundle key that aliases the private-key bundle
+    template: controller-deployment.yaml
+    set:
+      controller:
+        substrate:
+          enabled: true
+          ateApiEndpoint: "dns:///api.ate-system.svc:443"
+          tls:
+            mode: existingSecret
+            serverName: api.ate-system.svc
+            existingSecret:
+              name: kagent-ate-client-tls
+              serverCAKey: shared.pem
+              clientCredentialBundleKey: shared.pem
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.substrate.tls.existingSecret serverCAKey and clientCredentialBundleKey must differ so the private-key bundle is never mounted as a trust bundle"
+
+  - it: should reject the bundled Substrate beta stack in existing Secret mode
+    template: controller-deployment.yaml
+    set:
+      substrate:
+        enabled: true
+      controller:
+        substrate:
+          enabled: true
+          ateApiEndpoint: "dns:///api.ate-system.svc:443"
+          tls:
+            mode: existingSecret
+            serverName: api.ate-system.svc
+            existingSecret:
+              name: kagent-ate-client-tls
+              serverCAKey: ate-server-ca.pem
+              clientCredentialBundleKey: kagent-client-bundle.pem
+    asserts:
+      - failedTemplate:
+          errorMessage: "substrate.enabled must be false when controller.substrate.tls.mode=existingSecret; this mode connects to an external Substrate control plane and must not render the bundled beta certificate stack"
 
   - it: should set A2A_BASE_URL with computed default value
     template: controller-configmap.yaml

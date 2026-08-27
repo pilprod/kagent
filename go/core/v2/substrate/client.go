@@ -60,7 +60,10 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 }
 
 func ateAPITLSConfig(cfg Config) (*tls.Config, error) {
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: cfg.ServerName,
+	}
 	if cfg.CAFile != "" {
 		pem, err := os.ReadFile(cfg.CAFile)
 		if err != nil {

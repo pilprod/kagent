@@ -47,6 +47,68 @@ rolls the controller and UI before installing. The UI uses the controller's
 native gRPC application API on port `8084`; controller port `8083` remains for
 A2A, MCP, ACP, and operational HTTP endpoints.
 
+### External Substrate TLS on GKE
+
+The default `controller.substrate.tls.mode=projected` preserves the upstream
+PodCertificate and ClusterTrustBundle integration. On GKE clusters where those
+beta volume sources are unavailable, use `existingSecret` and provision the TLS
+Secret before installing kagent. Keep the bundled `substrate.enabled=false`;
+this profile connects to the separately installed external control plane:
+
+```yaml
+controller:
+  substrate:
+    enabled: true
+    ateApiEndpoint: dns:///api.ate-system.svc:443
+    tls:
+      mode: existingSecret
+      serverName: api.ate-system.svc
+      existingSecret:
+        name: kagent-ate-client-tls
+        serverCAKey: server-ca.pem
+        clientCredentialBundleKey: client-credential-bundle.pem
+```
+
+This chart accepts only the Secret name and data-key mappings. It never accepts
+PEM data in values and never creates or copies the Secret. The named Secret must
+exist in the kagent release namespace and contain:
+
+- `serverCAKey`: a PEM CA bundle that verifies the ate-api serving certificate;
+- `clientCredentialBundleKey`: the client private key plus certificate chain in
+  a single PEM credential bundle accepted by `tls.LoadX509KeyPair`.
+
+Both files are mounted read-only with mode `0440`. In this mode the chart adds
+the controller image's non-root group (`65532`) as the default pod `fsGroup`;
+an explicitly configured controller/global pod `fsGroup` takes precedence.
+The two data keys must differ so the private-key credential bundle cannot also
+be mounted as a trust bundle. The chart also rejects invalid Kubernetes Secret
+names and keys.
+
+`serverName` is mandatory in this mode and is restricted to an internal
+Kubernetes Service DNS name (`<service>.<namespace>.svc` or its
+`.cluster.local` form). The ate-api server leaf certificate must contain that
+exact DNS SAN. The client leaf must be valid for TLS client authentication,
+chain to the CA trusted by ate-api, and contain the governed workload identity
+as a URI SAN. For the chart-created controller ServiceAccount the normal SPIFFE
+identity is
+`spiffe://cluster.local/ns/<release-namespace>/sa/<release-name>-controller`.
+ate-api treats the first URI SAN as the mTLS principal; no bearer-token fallback
+is added by this chart.
+
+Kubernetes updates mounted Secret volumes atomically. The kagent client reloads
+the client leaf/key for each new TLS handshake, so new connections can use a
+rotated credential bundle without restarting. It reads the server CA pool only
+when the controller starts. Rotate trust roots with an overlap window and roll
+out the kagent controller after changing `serverCAKey`; existing connections
+retain the credentials from their established handshake.
+
+In `existingSecret` mode the controller Deployment contains neither a
+`podCertificate` nor a `clusterTrustBundle` projected source and has no
+`certificates.k8s.io` dependency. Rendering fails if the bundled Substrate
+subchart is enabled, because that stack still depends on the beta certificate
+APIs. This setting changes only kagent's connection to an already installed
+external Substrate control plane.
+
 ### Using kagent cli
 
 ```bash

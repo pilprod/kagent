@@ -107,6 +107,7 @@ func main() {
 
 	actors, err := substrate.Dial(ctx, substrate.Config{
 		AteAPIEndpoint: env("SUBSTRATE_ATE_API_ENDPOINT", "dns:///api.ate-system.svc:443"),
+		ServerName:     os.Getenv("SUBSTRATE_ATE_API_SERVER_NAME"),
 		CAFile:         os.Getenv("SUBSTRATE_ATE_API_CA_FILE"),
 		ClientCertFile: os.Getenv("SUBSTRATE_ATE_API_CLIENT_CERT_FILE"),
 		CallTimeout:    30 * time.Second,

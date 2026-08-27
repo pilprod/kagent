@@ -330,6 +330,19 @@ controller:
     enabled: false
     ateApiEndpoint: ""
     atenetRouterURL: ""
+    # TLS material for the controller -> ate-api mTLS connection.
+    # "projected" preserves the upstream PodCertificate/ClusterTrustBundle
+    # integration. "existingSecret" is the GKE-compatible mode and references
+    # a pre-created Secret; this chart never accepts or creates PEM material.
+    tls:
+      mode: projected
+      # Required for existingSecret. Must be the internal ate-api Service DNS
+      # name carried by the serving certificate, for example api.ate-system.svc.
+      serverName: ""
+      existingSecret:
+        name: ""
+        serverCAKey: server-ca.pem
+        clientCredentialBundleKey: client-credential-bundle.pem
     # Substrate ate-api-server identity for env source resolution (secretKeyRef/configMapKeyRef on ActorTemplates).
     ateApiServer:
       namespace: ate-system

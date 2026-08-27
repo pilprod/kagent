@@ -24,10 +24,11 @@ import (
 )
 
 func TestAteAPITLSConfig(t *testing.T) {
-	cfg, err := ateAPITLSConfig(Config{})
+	cfg, err := ateAPITLSConfig(Config{ServerName: "api.ate-system.svc"})
 	require.NoError(t, err)
 	require.False(t, cfg.InsecureSkipVerify)
 	require.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
+	require.Equal(t, "api.ate-system.svc", cfg.ServerName)
 
 	cert := newTestTLSCert(t)
 	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
@@ -62,6 +63,7 @@ func TestDial_verifiedTLSReachesReady(t *testing.T) {
 
 	c, err := Dial(context.Background(), Config{
 		AteAPIEndpoint: lis.Addr().String(),
+		ServerName:     "127.0.0.1",
 		CAFile:         caFile,
 		DialTimeout:    2 * time.Second,
 	})
