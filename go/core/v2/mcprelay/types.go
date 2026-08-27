@@ -94,8 +94,10 @@ type UpstreamTarget struct {
 
 // UpstreamClient resolves the pinned server identity behind the cluster trust
 // boundary. Callers can never supply a URL or arbitrary server reference.
+// ListTools invokes its callback synchronously for every page while one scoped
+// upstream session remains open; the Engine owns page and cursor validation.
 type UpstreamClient interface {
-	ListTools(context.Context, UpstreamTarget, string) (ToolPage, error)
+	ListTools(context.Context, UpstreamTarget, func(ToolPage) error) error
 	CallTool(context.Context, UpstreamTarget, string, json.RawMessage) (*mcp.CallToolResult, error)
 }
 
