@@ -103,6 +103,9 @@ jobs:
       - name: Verify the current chart runtime image contract
         run: ./scripts/test-fork-preview-release-contract.sh
 
+      - name: Verify the Docker-less Cloud Build fallback contract
+        run: ./scripts/test-cloud-build-fork-preview-contract.sh
+
       - name: Run release-critical Go checks
         working-directory: go
         run: |
@@ -521,7 +524,7 @@ jobs:
             --arg chart_version "${version}" \
             --arg controller "ghcr.io/${owner}/kagent/controller@${controller}" \
             --arg ui "ghcr.io/${owner}/kagent/ui@${ui}" \
-            --arg agent "ghcr.io/${owner}/kagent/golang-adk@${agent}" \
+            --arg kagentHarness "ghcr.io/${owner}/kagent/golang-adk@${agent}" \
             --arg codexHarness "ghcr.io/${owner}/kagent/codex-harness@${codex}" \
             --arg application_chart "oci://ghcr.io/${owner}/kagent/helm/kagent@${chart}" \
             --arg crds_chart "oci://ghcr.io/${owner}/kagent/helm/kagent-crds@${crds}" \
@@ -538,10 +541,10 @@ jobs:
               },
               image_refs: {
                 controller: $controller,
-                ui: $ui,
-                agent: $agent
+                ui: $ui
               },
               runtime_images: {
+                kagentHarness: $kagentHarness,
                 codexHarness: $codexHarness
               },
               charts: {
@@ -562,8 +565,8 @@ jobs:
             .chart_source.path == "helm/kagent" and
             (.chart_source.tree | test("^[0-9a-f]{40}$")) and
             .chart_source.skills_init_removal_commit == "059c01b68584dea113ccdf80f2e356c2d051e02a" and
-            (.image_refs | keys == ["agent", "controller", "ui"]) and
-            (.runtime_images | keys == ["codexHarness"]) and
+            (.image_refs | keys == ["controller", "ui"]) and
+            (.runtime_images | keys == ["codexHarness", "kagentHarness"]) and
             (.runtime_images | has("claudeHarness") | not) and
             (.charts | keys == ["application", "crds"]) and
             .charts.application.version == $version and

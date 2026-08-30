@@ -96,8 +96,9 @@ Five things make the obvious path fail, and each fails silently:
   template's golden snapshot, and the Python runtime does not survive that — it comes
   back with `Fatal Python error: Illegal instruction` and never serves `/readyz`, so
   the harness sits in `ResumeGoldenActor` and every message times out at the router
-  with a 504. A static Go binary restores cleanly. The chart names `golang-adk` as the
-  image for declarative agents, and the script builds that.
+  with a 504. A static Go binary restores cleanly. The script builds `golang-adk`,
+  resolves its registry digest, and writes that immutable reference into
+  `Harness.spec.workload.image`.
 
 ## When a page looks wrong
 

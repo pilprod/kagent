@@ -139,12 +139,13 @@ func TestExternalSlotTestbedEvidenceSeparatesDeploymentAndRuntimeImages(t *testi
 	require.Equal(t, "helm/kagent", evidence.ChartSource.Path)
 	require.Regexp(t, `^[0-9a-f]{40}$`, evidence.ChartSource.Tree)
 	require.Equal(t, "059c01b68584dea113ccdf80f2e356c2d051e02a", evidence.ChartSource.SkillsInitRemovalCommit)
-	require.Len(t, evidence.ImageRefs, 3)
-	for _, key := range []string{"controller", "ui", "agent"} {
+	require.Len(t, evidence.ImageRefs, 2)
+	for _, key := range []string{"controller", "ui"} {
 		require.Regexp(t, `^[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.ImageRefs[key])
 	}
 	require.NotContains(t, evidence.ImageRefs, "codexHarness")
-	require.Len(t, evidence.RuntimeImages, 1)
+	require.Len(t, evidence.RuntimeImages, 2)
+	require.Regexp(t, `^[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.RuntimeImages["kagentHarness"])
 	require.Regexp(t, `^[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.RuntimeImages["codexHarness"])
 	require.NotContains(t, evidence.RuntimeImages, "claudeHarness")
 	require.Len(t, evidence.Charts, 2)

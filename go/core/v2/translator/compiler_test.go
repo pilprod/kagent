@@ -29,6 +29,32 @@ func modelConfig() *v1alpha3.ModelConfig {
 	}
 }
 
+func TestCompileAgentTemplatePropagatesPinnedHarnessImage(t *testing.T) {
+	const runtimeImage = "ghcr.io/pilprod/kagent/golang-adk@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	harness := &v1alpha3.Harness{
+		ObjectMeta: metav1.ObjectMeta{Name: "kagent", Namespace: "test"},
+		Spec: v1alpha3.HarnessSpec{
+			Kagent:                &v1alpha3.KagentHarness{},
+			AllowedAgentTemplates: &v1alpha3.HarnessAgentTemplateAdmission{Selector: metav1.LabelSelector{}},
+			Workload:              v1alpha3.HarnessWorkload{Image: runtimeImage},
+			Substrate: &v1alpha3.HarnessSubstratePolicy{
+				WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
+				SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
+			},
+		},
+	}
+	template := &v1alpha3.AgentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "assistant", Namespace: "test"},
+		Spec: v1alpha3.AgentTemplateSpec{
+			ModelConfig: v1alpha3.AgentTemplateLocalReference{Name: "default-model"},
+		},
+	}
+
+	revision, err := compiler(t, modelConfig()).CompileAgentTemplate(context.Background(), harness, template)
+	require.NoError(t, err)
+	require.Equal(t, runtimeImage, revision.Image)
+}
+
 func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 	harness := &v1alpha3.Harness{
 		ObjectMeta: metav1.ObjectMeta{Name: "kagent", Namespace: "test"},

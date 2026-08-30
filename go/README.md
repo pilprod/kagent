@@ -113,14 +113,13 @@ In practice, use the root Makefile targets (`make build-controller`, `make build
 
 ### Agent runtime image digests
 
-The controller embeds OCI manifest digests for agent workload images at **link time** so declarative agents are deployed with `@sha256:...` refs instead of tags. Substrate ActorTemplates require digest-pinned images.
+Runtime images are selected by `Harness.spec.workload.image`, which accepts only
+digest-qualified OCI references. The controller preserves that exact reference
+in the compiled revision and Substrate ActorTemplate; it does not resolve a
+mutable chart tag or embed a default agent digest at link time.
 
-| Image | Makefile target | Injected into |
-|---|---|---|
-| `golang-adk` | `build-golang-adk` | `AgentImageDigest` |
-
-
-`kagent-adk` remains available as a base for Python BYO images, but is not a declarative runtime.
+`golang-adk` is the kagent Harness runtime. `kagent-adk` remains available as a
+base for Python BYO images, but is not a declarative runtime.
 
 ## Quick Testing with Oneshot
 

@@ -11,10 +11,10 @@
   },
   "image_refs": {
     "controller": "ghcr.io/example/kagent/controller@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "ui": "ghcr.io/example/kagent/ui@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    "agent": "ghcr.io/example/kagent/golang-adk@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    "ui": "ghcr.io/example/kagent/ui@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   },
   "runtime_images": {
+    "kagentHarness": "ghcr.io/example/kagent/golang-adk@sha256:9999999999999999999999999999999999999999999999999999999999999999",
     "codexHarness": "ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "charts": {

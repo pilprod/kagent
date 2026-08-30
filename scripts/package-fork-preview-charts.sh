@@ -15,7 +15,6 @@ if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+\.kap\.[0-9]+$ ]];
 fi
 
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-repository_root="$(cd "${script_directory}/.." && pwd -P)"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "${temporary_directory}"' EXIT
 python="${PYTHON:-python3}"
@@ -27,29 +26,11 @@ fi
 mkdir -p "${output_directory}"
 output_directory="$(cd "${output_directory}" && pwd -P)"
 
-for chart in kagent-crds kagent; do
-  source_directory="${repository_root}/helm/${chart}"
-  staged_directory="${temporary_directory}/${chart}"
-  cp -R "${source_directory}" "${staged_directory}"
-  rm -rf "${staged_directory}/charts"
-  if [[ "${chart}" == "kagent" ]]; then
-    # This suite targets the deliberately excluded kagent-tools subchart. All
-    # parent-chart suites still run against the exact preview archive source.
-    rm -f "${staged_directory}/tests/kagent-tools-nodeselector_test.yaml"
-  fi
+"${script_directory}/stage-fork-preview-charts.sh" \
+  "${version}" "${temporary_directory}/staged"
 
-  # Fork previews use an independently installed external Substrate control
-  # plane and disable every optional subchart. Removing the dependency block
-  # makes the preview archive a closed, source-only artifact: release jobs do
-  # not contact chart repositories or resolve a floating dependency range.
-  sed '/^dependencies:/,$d' "${source_directory}/Chart-template.yaml" |
-    sed "s/\${VERSION}/${version}/g" > "${staged_directory}/Chart.yaml"
-  cat >> "${staged_directory}/Chart.yaml" <<'EOF'
-annotations:
-  preview.yourown.chat/deployment-class: external-substrate-testbed
-  preview.yourown.chat/optional-subcharts: excluded
-EOF
-  rm -f "${staged_directory}/Chart-template.yaml" "${staged_directory}/Chart.lock"
+for chart in kagent-crds kagent; do
+  staged_directory="${temporary_directory}/staged/${chart}"
 
   helm lint --strict "${staged_directory}"
   if [[ "${chart}" == "kagent" ]]; then

@@ -35,6 +35,9 @@ func TestActorTemplateForRevision(t *testing.T) {
 		t.Fatalf("ActorTemplate = %+v", template)
 	}
 	container := template.Spec.Containers[0]
+	if container.Image != spec.Image {
+		t.Fatalf("ActorTemplate image = %q, want immutable Revision image %q", container.Image, spec.Image)
+	}
 	if template.Spec.SandboxClass != atev1alpha1.SandboxClassGvisor || container.Readyz.HTTPGet.Path != "/readyz" || container.Readyz.HTTPGet.Port != 8081 || container.Readyz.TimeoutSeconds != 30 {
 		t.Fatalf("unexpected runtime contract: %+v", template.Spec)
 	}
