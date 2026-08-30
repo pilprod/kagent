@@ -11,22 +11,25 @@ ON CONFLICT (namespace, agent_template_uid, harness_uid) DO UPDATE SET
     retired_at = NULL,
     updated_at = NOW();
 
--- name: UpsertRuntimeRevision :exec
+-- name: UpsertRuntimeRevision :execrows
 INSERT INTO runtime_revision (
     revision, namespace, agent_template_name, agent_template_uid,
     harness_name, harness_uid, source_snapshot, agent_card, egress_destinations,
+    backend_kind, external_runtime,
     actor_template_namespace, actor_template_name, actor_template_uid,
     phase, golden_snapshot
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14
+    $9, $10, $11, $12, $13, $14, $15, $16
 )
 ON CONFLICT (revision) DO UPDATE SET
     agent_card = EXCLUDED.agent_card,
     actor_template_uid = EXCLUDED.actor_template_uid,
     phase = EXCLUDED.phase,
     golden_snapshot = EXCLUDED.golden_snapshot,
-    updated_at = NOW();
+    updated_at = NOW()
+WHERE runtime_revision.backend_kind = EXCLUDED.backend_kind
+  AND COALESCE(runtime_revision.external_runtime, '') = COALESCE(EXCLUDED.external_runtime, '');
 
 -- name: MarkRuntimeRevisionSuccessful :exec
 UPDATE agent_template_harness_pair

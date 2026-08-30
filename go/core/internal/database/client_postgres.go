@@ -370,16 +370,25 @@ func (c *postgresClient) UpsertAgentTemplateHarnessPair(ctx context.Context, pai
 }
 
 func (c *postgresClient) UpsertRuntimeRevision(ctx context.Context, revision dbpkg.RuntimeRevision) error {
-	if err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
+	if err := revision.ValidateBackendIdentity(); err != nil {
+		return &runtimeRevisionPersistenceError{operation: "validate backend identity", cause: err}
+	}
+	rowsAffected, err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
 		Revision: revision.Revision, Namespace: revision.Namespace,
 		AgentTemplateName: revision.AgentTemplateName, AgentTemplateUid: revision.AgentTemplateUID,
 		HarnessName: revision.HarnessName, HarnessUid: revision.HarnessUID,
 		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard,
 		EgressDestinations:     revision.EgressDestinations,
+		BackendKind:            string(revision.BackendKind),
+		ExternalRuntime:        externalRuntimeDBValue(revision.ExternalRuntime),
 		ActorTemplateNamespace: revision.ActorTemplateNamespace, ActorTemplateName: revision.ActorTemplateName,
 		ActorTemplateUid: revision.ActorTemplateUID, Phase: revision.Phase, GoldenSnapshot: revision.GoldenSnapshot,
-	}); err != nil {
-		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	})
+	if err != nil {
+		return &runtimeRevisionPersistenceError{operation: "upsert", cause: err}
+	}
+	if rowsAffected != 1 {
+		return &runtimeRevisionPersistenceError{operation: "upsert", cause: errors.New("persisted backend identity conflicts with requested identity")}
 	}
 	return nil
 }
@@ -389,15 +398,11 @@ func (c *postgresClient) GetRuntimeRevision(ctx context.Context, revision string
 	if err != nil {
 		return nil, fmt.Errorf("get runtime revision %s: %w", revision, notFoundOr(err))
 	}
-	return &dbpkg.RuntimeRevision{
-		Revision: row.Revision, Namespace: row.Namespace,
-		AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
-		HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
-		EgressDestinations:     row.EgressDestinations,
-		ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
-		ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
-	}, nil
+	storedRevision, err := runtimeRevisionFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &storedRevision, nil
 }
 
 func (c *postgresClient) MarkRuntimeRevisionSuccessful(ctx context.Context, pair dbpkg.AgentTemplateHarnessPair) error {
@@ -429,17 +434,59 @@ func (c *postgresClient) ListUnreferencedRuntimeRevisions(ctx context.Context) (
 	}
 	result := make([]dbpkg.RuntimeRevision, 0, len(rows))
 	for _, row := range rows {
-		result = append(result, dbpkg.RuntimeRevision{
-			Revision: row.Revision, Namespace: row.Namespace,
-			AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
-			HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-			SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
-			EgressDestinations:     row.EgressDestinations,
-			ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
-			ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
-		})
+		revision, err := runtimeRevisionFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, revision)
 	}
 	return result, nil
+}
+
+func runtimeRevisionFromRow(row dbgen.RuntimeRevision) (dbpkg.RuntimeRevision, error) {
+	revision := dbpkg.RuntimeRevision{
+		Revision: row.Revision, Namespace: row.Namespace,
+		AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
+		HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
+		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
+		EgressDestinations:     row.EgressDestinations,
+		BackendKind:            dbpkg.RuntimeBackendKind(row.BackendKind),
+		ExternalRuntime:        externalRuntimeFromDB(row.ExternalRuntime),
+		ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
+		ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
+	}
+	if err := revision.ValidateBackendIdentity(); err != nil {
+		return dbpkg.RuntimeRevision{}, &runtimeRevisionPersistenceError{operation: "decode backend identity", cause: err}
+	}
+	return revision, nil
+}
+
+func externalRuntimeDBValue(runtime dbpkg.ExternalRuntime) *string {
+	if runtime == "" {
+		return nil
+	}
+	value := string(runtime)
+	return &value
+}
+
+func externalRuntimeFromDB(runtime *string) dbpkg.ExternalRuntime {
+	if runtime == nil {
+		return ""
+	}
+	return dbpkg.ExternalRuntime(*runtime)
+}
+
+type runtimeRevisionPersistenceError struct {
+	operation string
+	cause     error
+}
+
+func (e *runtimeRevisionPersistenceError) Error() string {
+	return fmt.Sprintf("failed to %s for runtime revision", e.operation)
+}
+
+func (e *runtimeRevisionPersistenceError) Unwrap() error {
+	return e.cause
 }
 
 func (c *postgresClient) DeleteUnreferencedRuntimeRevision(ctx context.Context, revision string) error {

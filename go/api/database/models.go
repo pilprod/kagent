@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	a2a "github.com/a2aproject/a2a-go/v2/a2a"
@@ -253,6 +254,27 @@ type AgentTemplateHarnessPair struct {
 	AgentTemplateLabels map[string]string
 }
 
+// RuntimeBackendKind identifies the private compute backend pinned to an
+// immutable runtime revision.
+type RuntimeBackendKind string
+
+const (
+	// RuntimeBackendKindSubstrate selects in-cluster Substrate compute.
+	RuntimeBackendKindSubstrate RuntimeBackendKind = "substrate"
+	// RuntimeBackendKindExternal selects a connected external runtime.
+	RuntimeBackendKindExternal RuntimeBackendKind = "external"
+)
+
+// ExternalRuntime identifies the implementation behind an external backend.
+type ExternalRuntime string
+
+const (
+	// ExternalRuntimeCodex selects a Codex client runtime.
+	ExternalRuntimeCodex ExternalRuntime = "codex"
+	// ExternalRuntimeClaude selects a Claude Code client runtime.
+	ExternalRuntimeClaude ExternalRuntime = "claude"
+)
+
 type RuntimeRevision struct {
 	Revision               string
 	Namespace              string
@@ -263,11 +285,31 @@ type RuntimeRevision struct {
 	SourceSnapshot         json.RawMessage
 	AgentCard              json.RawMessage
 	EgressDestinations     []string
+	BackendKind            RuntimeBackendKind
+	ExternalRuntime        ExternalRuntime
 	ActorTemplateNamespace string
 	ActorTemplateName      string
 	ActorTemplateUID       string
 	Phase                  string
 	GoldenSnapshot         string
+}
+
+// ValidateBackendIdentity verifies the persisted private routing identity
+// without including untrusted values in returned error strings.
+func (r RuntimeRevision) ValidateBackendIdentity() error {
+	switch r.BackendKind {
+	case RuntimeBackendKindSubstrate:
+		if r.ExternalRuntime != "" {
+			return errors.New("substrate runtime revision must not select an external runtime")
+		}
+	case RuntimeBackendKindExternal:
+		if r.ExternalRuntime != ExternalRuntimeCodex && r.ExternalRuntime != ExternalRuntimeClaude {
+			return errors.New("external runtime revision must select a supported runtime")
+		}
+	default:
+		return errors.New("runtime revision backend kind is invalid")
+	}
+	return nil
 }
 
 // AgentInstanceQuery narrows a page of AgentInstances. Zero values mean "do not

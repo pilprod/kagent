@@ -4,11 +4,16 @@ package runtimebackend
 
 import (
 	"context"
+	"errors"
 
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 )
+
+// ErrCheckpointUnsupported means a runtime can execute A2A tasks but cannot
+// create or restore the durable checkpoint boundary required for forks.
+var ErrCheckpointUnsupported = errors.New("runtime backend does not support checkpoints")
 
 // Endpoint is the private routing information published after a runtime has
 // been created. It deliberately contains no public or user-selectable address.

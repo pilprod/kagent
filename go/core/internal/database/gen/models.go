@@ -225,6 +225,8 @@ type RuntimeRevision struct {
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 	AgentCard              []byte
+	BackendKind            string
+	ExternalRuntime        *string
 }
 
 type Session struct {
