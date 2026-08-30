@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "channel": "preview",
+  "tag": "v0.0.0-test.kap.1",
+  "sourceCommit": "0000000000000000000000000000000000000000",
+  "images": {
+    "controller": "ghcr.io/example/kagent/controller@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "ui": "ghcr.io/example/kagent/ui@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "codexHarness": "ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "charts": {
+    "kagent": "ghcr.io/example/kagent/helm/kagent@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "kagentCRDs": "ghcr.io/example/kagent/helm/kagent-crds@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

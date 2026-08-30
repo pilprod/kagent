@@ -633,8 +633,10 @@ func TestRuntimeRevisionPlacementRoundTripAndImmutability(t *testing.T) {
 	if _, err := client.MarkAgentInstanceReady(ctx, instance.GetId(), "external.example"); err != nil {
 		t.Fatal(err)
 	}
+	checkpointID := uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc")
+	sourceInstanceID := uuid.MustParse(instance.GetId())
 	if _, err := client.ReserveAgentInstanceCheckpoint(ctx, dbpkg.AgentInstanceCheckpoint{
-		ID: "external-checkpoint", Namespace: "team-a", SourceInstanceID: instance.GetId(), UserID: "alice", RequestID: "external-checkpoint-request",
+		ID: checkpointID, Namespace: "team-a", SourceInstanceID: sourceInstanceID, UserID: "alice", RequestID: "external-checkpoint-request",
 	}); !errors.Is(err, dbpkg.ErrAgentInstanceSnapshotUnsupported) {
 		t.Fatalf("ExternalSlot checkpoint error = %v", err)
 	}

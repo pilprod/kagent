@@ -15,6 +15,7 @@ func TestActorTemplateForRevision(t *testing.T) {
 		Namespace: "agents", AgentTemplateName: "helper", HarnessName: "kagent",
 		Image:          "agent.example/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Placement:      translator.RevisionPlacementKubernetesPod,
+		SandboxClass:   translator.SandboxClassGvisor,
 		WorkerPoolName: "default", SnapshotLocation: "snapshots",
 		ConfigJSON: []byte(`{"instruction":"help"}`), AgentCardJSON: []byte(`{"name":"helper"}`),
 		Environment: []corev1.EnvVar{{Name: "API_KEY", Value: "secret"}},
@@ -64,6 +65,7 @@ func TestActorTemplateForExternalSlotRevision(t *testing.T) {
 		Namespace: "agents", AgentTemplateName: "helper", HarnessName: "codex",
 		Image:         "agent.example/codex@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Placement:     translator.RevisionPlacementExternalSlot,
+		SandboxClass:  translator.SandboxClassHostProcessHardened,
 		ConfigJSON:    []byte(`{"runtime":"codex"}`),
 		AgentCardJSON: []byte(`{"name":"helper"}`),
 		Environment:   []corev1.EnvVar{{Name: "LITERAL", Value: "value"}},
@@ -82,8 +84,8 @@ func TestActorTemplateForExternalSlotRevision(t *testing.T) {
 	if template.Spec.WorkerSelector != nil || len(template.Spec.Volumes) != 0 || template.Spec.SnapshotsConfig.Location != "" {
 		t.Fatalf("external template contains Kubernetes-only placement state: %+v", template.Spec)
 	}
-	if template.Spec.SandboxClass != "" || len(template.Spec.Containers) != 1 || len(template.Spec.Containers[0].VolumeMounts) != 0 {
-		t.Fatalf("external template contains sandbox or volume mounts: %+v", template.Spec)
+	if template.Spec.SandboxClass != atev1alpha1.SandboxClass(translator.SandboxClassHostProcessHardened) || len(template.Spec.Containers) != 1 || len(template.Spec.Containers[0].VolumeMounts) != 0 {
+		t.Fatalf("external template has an unexpected sandbox or volume mounts: %+v", template.Spec)
 	}
 	environment := map[string]string{}
 	for _, variable := range template.Spec.Containers[0].Env {
@@ -91,5 +93,33 @@ func TestActorTemplateForExternalSlotRevision(t *testing.T) {
 	}
 	if environment["LITERAL"] != "value" || environment["KAGENT_CONFIG_JSON"] != string(spec.ConfigJSON) || environment["KAGENT_AGENT_CARD_JSON"] != string(spec.AgentCardJSON) {
 		t.Fatalf("external runtime bundle was not retained: %+v", environment)
+	}
+}
+
+func TestActorTemplateForRevisionRejectsSandboxPlacementMismatch(t *testing.T) {
+	revisionID := translator.RevisionID{1}
+	for _, test := range []struct {
+		name string
+		spec *translator.Revision
+	}{
+		{
+			name: "KubernetesPod external sandbox",
+			spec: &translator.Revision{
+				Placement: translator.RevisionPlacementKubernetesPod, SandboxClass: translator.SandboxClassHostProcessHardened,
+				WorkerPoolName: "default", SnapshotLocation: "snapshots",
+			},
+		},
+		{
+			name: "ExternalSlot in-cluster sandbox",
+			spec: &translator.Revision{
+				Placement: translator.RevisionPlacementExternalSlot, SandboxClass: translator.SandboxClassGvisor,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ActorTemplateForRevision(test.spec, revisionID); err == nil {
+				t.Fatalf("ActorTemplateForRevision accepted placement %q with sandbox class %q", test.spec.Placement, test.spec.SandboxClass)
+			}
+		})
 	}
 }

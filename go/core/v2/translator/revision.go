@@ -31,6 +31,37 @@ func (p RevisionPlacement) Validate() error {
 	}
 }
 
+// SandboxClass is the execution-isolation contract compiled into an immutable
+// runtime revision. It is internal rather than user-selected: each Harness
+// compiler owns the class compatible with its placement.
+type SandboxClass string
+
+const (
+	SandboxClassGvisor              SandboxClass = "gvisor"
+	SandboxClassMicroVM             SandboxClass = "microvm"
+	SandboxClassHostProcessHardened SandboxClass = "host-process-hardened"
+)
+
+// ValidateForPlacement rejects a class that cannot be served by the selected
+// execution provider. The current runtime contracts are deliberately narrow;
+// adding another class requires an explicit compiler and Substrate contract.
+func (s SandboxClass) ValidateForPlacement(placement RevisionPlacement) error {
+	switch placement {
+	case RevisionPlacementKubernetesPod:
+		if s == SandboxClassGvisor || s == SandboxClassMicroVM {
+			return nil
+		}
+		return fmt.Errorf("%s runtime revision requires an in-cluster sandbox class, got %q", placement, s)
+	case RevisionPlacementExternalSlot:
+		if s == SandboxClassHostProcessHardened {
+			return nil
+		}
+		return fmt.Errorf("%s runtime revision requires sandbox class %q, got %q", placement, SandboxClassHostProcessHardened, s)
+	default:
+		return placement.Validate()
+	}
+}
+
 // RevisionID is the SHA-256 identity of a compiled runtime revision. Keeping
 // the digest as a fixed-size value makes invalid lengths unrepresentable.
 type RevisionID [sha256.Size]byte
@@ -62,6 +93,9 @@ type Revision struct {
 	// compilers set it; it is never copied from user-authored generic provider
 	// configuration.
 	Placement RevisionPlacement
+	// SandboxClass selects the isolation contract within that provider. It is
+	// compiled together with Placement and participates in revision identity.
+	SandboxClass SandboxClass
 
 	// WorkerPoolName and SnapshotLocation control Substrate placement and state.
 	WorkerPoolName   string
@@ -76,6 +110,9 @@ type Revision struct {
 	MCPPolicy MCPPolicyV1
 	// EgressDestinations is the hostname allowlist required by this revision.
 	EgressDestinations []string
+	// Warnings are non-blocking compilation diagnostics. They are deliberately
+	// excluded from Digest because they do not change runtime behavior.
+	Warnings []string
 }
 
 // Digest returns the immutable identity of every input that affects runtime
@@ -88,6 +125,9 @@ func (r *Revision) Digest() (RevisionID, error) {
 	if err := r.Placement.Validate(); err != nil {
 		return RevisionID{}, err
 	}
+	if err := r.SandboxClass.ValidateForPlacement(r.Placement); err != nil {
+		return RevisionID{}, err
+	}
 	raw, err := json.Marshal(struct {
 		Namespace          string            `json:"namespace"`
 		AgentTemplateName  string            `json:"agentTemplateName"`
@@ -97,6 +137,7 @@ func (r *Revision) Digest() (RevisionID, error) {
 		ConfigJSON         json.RawMessage   `json:"config"`
 		AgentCardJSON      json.RawMessage   `json:"agentCard"`
 		Placement          RevisionPlacement `json:"placement"`
+		SandboxClass       SandboxClass      `json:"sandboxClass"`
 		WorkerPoolName     string            `json:"workerPoolName"`
 		SnapshotLocation   string            `json:"snapshotLocation"`
 		Provenance         json.RawMessage   `json:"provenance"`
@@ -106,6 +147,7 @@ func (r *Revision) Digest() (RevisionID, error) {
 		Namespace: r.Namespace, AgentTemplateName: r.AgentTemplateName, HarnessName: r.HarnessName,
 		Image: r.Image, Environment: r.Environment, ConfigJSON: r.ConfigJSON, AgentCardJSON: r.AgentCardJSON,
 		Placement:      r.Placement,
+		SandboxClass:   r.SandboxClass,
 		WorkerPoolName: r.WorkerPoolName, SnapshotLocation: r.SnapshotLocation, Provenance: r.Provenance,
 		MCPPolicy:          r.MCPPolicy,
 		EgressDestinations: r.EgressDestinations,

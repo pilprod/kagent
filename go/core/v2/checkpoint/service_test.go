@@ -215,7 +215,8 @@ func TestForkCreatesAgentInstanceFromCheckpoint(t *testing.T) {
 
 func TestExternalSlotSnapshotOperationsFailBeforeMutation(t *testing.T) {
 	ctx := auth.AuthSessionTo(context.Background(), testSession{userID: "alice"})
-	instanceID := "018f47a2-4efb-7c21-a848-123456789abc"
+	checkpointID := uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc")
+	instanceID := checkpointID.String()
 
 	t.Run("checkpoint", func(t *testing.T) {
 		store := &testStore{reserveErr: dbpkg.ErrAgentInstanceSnapshotUnsupported}
@@ -231,11 +232,11 @@ func TestExternalSlotSnapshotOperationsFailBeforeMutation(t *testing.T) {
 
 	t.Run("fork", func(t *testing.T) {
 		checkpoint := &dbpkg.AgentInstanceCheckpoint{
-			ID: instanceID, Namespace: "team-a", UserID: "alice", SnapshotContentScope: "DATA", State: "READY",
+			ID: checkpointID, Namespace: "team-a", UserID: "alice", SnapshotContentScope: "DATA", State: "READY",
 		}
 		store := &testStore{prepared: checkpoint, forkErr: dbpkg.ErrAgentInstanceSnapshotUnsupported}
 		workflow := &testWorkflow{}
-		_, err := NewService(store, testAuthorizer{}, &testTags{}, workflow).Fork(ctx, "team-a", checkpoint.ID, "fork-request")
+		_, err := NewService(store, testAuthorizer{}, &testTags{}, workflow).Fork(ctx, "team-a", checkpoint.ID.String(), "fork-request")
 		if !serviceerrors.IsCode(err, serviceerrors.CodeFailedPrecondition) {
 			t.Fatalf("Fork error = %v, want FailedPrecondition", err)
 		}

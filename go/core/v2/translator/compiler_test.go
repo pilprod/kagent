@@ -74,6 +74,9 @@ func TestCompileAgentTemplatePinsAgentPluginSources(t *testing.T) {
 	if err := json.Unmarshal(spec.ConfigJSON, &config); err != nil {
 		t.Fatal(err)
 	}
+	if spec.Placement != v2translator.RevisionPlacementKubernetesPod || spec.SandboxClass != v2translator.SandboxClassGvisor {
+		t.Fatalf("kagent runtime contract = placement %q sandboxClass %q", spec.Placement, spec.SandboxClass)
+	}
 	// The driver is part of the assertion, not incidental. The Python runtime opens
 	// this URL with an asyncio engine and refuses a bare `sqlite:` one, so dropping
 	// the driver leaves an actor that never serves /readyz — which surfaces as a
@@ -118,7 +121,11 @@ type testHarnessCompiler struct{ input *v2translator.HarnessInput }
 
 func (c *testHarnessCompiler) Compile(_ context.Context, input *v2translator.HarnessInput) (*v2translator.Revision, error) {
 	c.input = input
-	return &v2translator.Revision{AgentTemplateName: input.Root.Template.Name, Placement: v2translator.RevisionPlacementExternalSlot}, nil
+	return &v2translator.Revision{
+		AgentTemplateName: input.Root.Template.Name,
+		Placement:         v2translator.RevisionPlacementExternalSlot,
+		SandboxClass:      v2translator.SandboxClassHostProcessHardened,
+	}, nil
 }
 
 func TestCompilerAcceptsExternalHarnessCompiler(t *testing.T) {

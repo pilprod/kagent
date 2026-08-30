@@ -119,6 +119,20 @@ func (w *ActorWorkflow) Create(ctx context.Context, instance *apiv1alpha1.AgentI
 	if actor.GetActorTemplateNamespace() != revision.ActorTemplateNamespace || actor.GetActorTemplateName() != revision.ActorTemplateName {
 		return nil, fmt.Errorf("actor %s/%s uses unexpected ActorTemplate %s/%s", atespace, name, actor.GetActorTemplateNamespace(), actor.GetActorTemplateName())
 	}
+	// ExternalSlot Actors must be running before the instance is published as
+	// READY: an external provider claims capacity only as part of ResumeActor.
+	// ResumeActor is intentionally called even when a retry discovers an
+	// already-running Actor; Substrate defines that call as an idempotent no-op,
+	// which closes the crash window between resume and the database transition.
+	if revision.Placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+		actor, err = w.actors.ResumeActor(ctx, atespace, name)
+		if err != nil {
+			return nil, fmt.Errorf("resume ExternalSlot Actor %s/%s: %w", atespace, name, err)
+		}
+		if actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+			return nil, fmt.Errorf("resume ExternalSlot Actor %s/%s returned status %s", atespace, name, actor.GetStatus().GetState())
+		}
+	}
 	instance, err = w.store.MarkAgentInstanceReady(ctx, instance.GetId(), substrate.ActorHost(atespace, name, ""))
 	if err != nil {
 		return nil, fmt.Errorf("mark AgentInstance ready: %w", err)

@@ -49,6 +49,56 @@ type ReconciliationFailure struct {
 	Message   string
 }
 
+const (
+	defaultActorTemplateReadyzPath           = "/readyz"
+	defaultActorTemplateReadyzTimeoutSeconds = 30
+)
+
+// actorTemplateSpecsEqual compares the effective immutable specs Kubernetes
+// persists. CRD structural-schema defaults are applied by the API server, so a
+// freshly compiled spec can legitimately differ from the object returned by a
+// subsequent GET even though both describe the same ActorTemplate. Normalize
+// deep copies rather than mutating the compiled revision: the revision digest
+// and ExternalSlot desired semantics must remain independent of admission.
+func actorTemplateSpecsEqual(left, right atev1alpha1.ActorTemplateSpec) bool {
+	return apiequality.Semantic.DeepEqual(
+		actorTemplateSpecWithCRDDefaults(&left),
+		actorTemplateSpecWithCRDDefaults(&right),
+	)
+}
+
+func actorTemplateSpecWithCRDDefaults(spec *atev1alpha1.ActorTemplateSpec) *atev1alpha1.ActorTemplateSpec {
+	defaulted := spec.DeepCopy()
+	if defaulted.WorkerProvider == "" {
+		defaulted.WorkerProvider = atev1alpha1.WorkerProviderKubernetesPod
+	}
+	if defaulted.SandboxClass == "" {
+		defaulted.SandboxClass = atev1alpha1.SandboxClassGvisor
+	}
+	if defaulted.SnapshotsConfig.OnPause == "" {
+		defaulted.SnapshotsConfig.OnPause = atev1alpha1.SnapshotScopeFull
+	}
+	if defaulted.SnapshotsConfig.OnCommit == "" {
+		defaulted.SnapshotsConfig.OnCommit = atev1alpha1.SnapshotScopeFull
+	}
+	if defaulted.SnapshotsConfig.OnResume.FromData == "" {
+		defaulted.SnapshotsConfig.OnResume.FromData = atev1alpha1.ResumeSourceColdBoot
+	}
+	for i := range defaulted.Containers {
+		readyz := defaulted.Containers[i].Readyz
+		if readyz == nil {
+			continue
+		}
+		if readyz.TimeoutSeconds == 0 {
+			readyz.TimeoutSeconds = defaultActorTemplateReadyzTimeoutSeconds
+		}
+		if readyz.HTTPGet != nil && readyz.HTTPGet.Path == "" {
+			readyz.HTTPGet.Path = defaultActorTemplateReadyzPath
+		}
+	}
+	return defaulted
+}
+
 func newPairReconciliations(
 	pairs krt.Collection[AgentTemplateHarnessPair],
 	agentTemplates krt.Collection[*kagentv1alpha3.AgentTemplate],
@@ -109,7 +159,7 @@ func newPairReconciliations(
 			return state
 		}
 		state.ObservedActorTemplate = (*observed).DeepCopy()
-		if !apiequality.Semantic.DeepEqual(state.ObservedActorTemplate.Spec, state.DesiredActorTemplate.Spec) {
+		if !actorTemplateSpecsEqual(state.ObservedActorTemplate.Spec, state.DesiredActorTemplate.Spec) {
 			state.Failure = &ReconciliationFailure{
 				Condition: kagentv1alpha3.AgentTemplateConditionReady,
 				Reason:    "ActorTemplateConflict",

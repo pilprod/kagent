@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/kagent-dev/kagent/go/api/agentplugin"
 )
 
 const (
@@ -126,6 +128,8 @@ var (
 	templateNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$`)
 	runtimeNamePattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 	mcpGrantIDPattern   = regexp.MustCompile(`^mcp-[0-9a-f]{64}$`)
+	registryHostPattern = regexp.MustCompile(`^(?:localhost|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::[1-9][0-9]{0,4})?$`)
+	ociRepositoryPart   = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 )
 
 // Decode strictly decodes and validates one runtime config document.
@@ -251,7 +255,7 @@ func validateAgent(runtime Runtime, agent *AgentConfig, depth int, seenGrantIDs 
 			return fmt.Errorf("agent %q has duplicate skill %q", agent.TemplateName, skill.Name)
 		}
 		selectedSkills[skill.Name] = struct{}{}
-		if err := skill.Source.validate(); err != nil {
+		if err := skill.Source.validateStandaloneSkill(); err != nil {
 			return fmt.Errorf("agent %q skill %q source: %w", agent.TemplateName, skill.Name, err)
 		}
 	}
@@ -302,6 +306,115 @@ func validateAgent(runtime Runtime, agent *AgentConfig, depth int, seenGrantIDs 
 		if err := validateAgent(runtime, &binding.Agent, depth+1, seenGrantIDs); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ExternalHostSkillResources returns the only declarative resource shape the
+// external-host ABI can currently materialize: standalone, root-level Agent
+// Skills from digest-pinned OCI artifacts. The repository prefix is selected
+// by local owner policy and is not part of the portable revision. MCP grants, plugin
+// packages, source subpaths, and Shared agents remain fail-closed.
+func ExternalHostSkillResources(agent AgentConfig, allowedRepositoryPrefix string) (*agentplugin.Resources, error) {
+	if len(agent.MCPGrants) != 0 {
+		return nil, fmt.Errorf("external-host MCP grants are not materialized by this ABI version")
+	}
+	if len(agent.Plugins) != 0 {
+		return nil, fmt.Errorf("external-host plugin packages are not materialized by this ABI version")
+	}
+	if len(agent.SharedAgents) != 0 {
+		return nil, fmt.Errorf("external-host Shared agents are not materialized by this ABI version")
+	}
+	if len(agent.Skills) == 0 {
+		return nil, nil
+	}
+	if err := validateOCIRepositoryPrefix(allowedRepositoryPrefix); err != nil {
+		return nil, fmt.Errorf("external-host standalone skills require a local owner-approved OCI repository prefix: %w", err)
+	}
+
+	resources := &agentplugin.Resources{Skills: make([]agentplugin.Skill, 0, len(agent.Skills))}
+	for _, skill := range agent.Skills {
+		if err := skill.Source.validateStandaloneSkill(); err != nil {
+			return nil, fmt.Errorf("external-host skill %q source: %w", skill.Name, err)
+		}
+		repository, err := ociRepository(skill.Source.OCI)
+		if err != nil {
+			return nil, fmt.Errorf("external-host skill %q source: %w", skill.Name, err)
+		}
+		if !strings.HasPrefix(repository, allowedRepositoryPrefix) || len(repository) == len(allowedRepositoryPrefix) {
+			return nil, fmt.Errorf("external-host skill %q repository %q is not allowed by local owner policy", skill.Name, repository)
+		}
+		resources.Skills = append(resources.Skills, agentplugin.Skill{
+			Name:   skill.Name,
+			Source: agentplugin.Source{OCI: skill.Source.OCI},
+		})
+	}
+	return resources, nil
+}
+
+func (s ArtifactSource) validateStandaloneSkill() error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if s.OCI == "" || s.Git != nil || s.Bucket != nil {
+		return fmt.Errorf("standalone skills require a digest-pinned OCI source")
+	}
+	if s.Path != "" {
+		return fmt.Errorf("standalone OCI skills must use the artifact root")
+	}
+	_, err := ociRepository(s.OCI)
+	return err
+}
+
+func ociRepository(reference string) (string, error) {
+	if !ociDigestPattern.MatchString(reference) {
+		return "", fmt.Errorf("OCI source is not digest-pinned")
+	}
+	repository, _, found := strings.Cut(reference, "@sha256:")
+	if !found || repository == "" {
+		return "", fmt.Errorf("OCI source is not digest-pinned")
+	}
+	return normalizeOCIRepository(repository)
+}
+
+func normalizeOCIRepository(repository string) (string, error) {
+	if repository == "" || repository != strings.ToLower(repository) || strings.ContainsAny(repository, `\\?#`) {
+		return "", fmt.Errorf("OCI repository must be lowercase and canonical")
+	}
+	parts := strings.Split(repository, "/")
+	registry := "registry-1.docker.io"
+	if strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost" {
+		registry = parts[0]
+		parts = parts[1:]
+		if !registryHostPattern.MatchString(registry) {
+			return "", fmt.Errorf("OCI registry host is invalid")
+		}
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("OCI repository path is required")
+	}
+	if registry == "registry-1.docker.io" && len(parts) == 1 {
+		parts = append([]string{"library"}, parts...)
+	}
+	for _, part := range parts {
+		if !ociRepositoryPart.MatchString(part) {
+			return "", fmt.Errorf("OCI repository path is invalid")
+		}
+	}
+	return registry + "/" + strings.Join(parts, "/"), nil
+}
+
+func validateOCIRepositoryPrefix(prefix string) error {
+	if !strings.HasSuffix(prefix, "/") || len(prefix) < 2 {
+		return fmt.Errorf("OCI repository prefix must end with '/'")
+	}
+	repository := strings.TrimSuffix(prefix, "/")
+	normalized, err := normalizeOCIRepository(repository)
+	if err != nil {
+		return err
+	}
+	if normalized != repository {
+		return fmt.Errorf("OCI repository prefix is not canonical")
 	}
 	return nil
 }

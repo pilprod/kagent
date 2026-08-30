@@ -13,6 +13,47 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestActorTemplateSpecsEqualNormalizesCRDDefaults(t *testing.T) {
+	desired := atev1alpha1.ActorTemplateSpec{
+		WorkerProvider: atev1alpha1.WorkerProviderExternalSlot,
+		SandboxClass:   atev1alpha1.SandboxClass(v2translator.SandboxClassHostProcessHardened),
+		Containers: []atev1alpha1.Container{{
+			Name: "runtime",
+			Readyz: &atev1alpha1.ContainerReadyz{HTTPGet: &atev1alpha1.HTTPGetAction{
+				Port: 8081,
+			}},
+		}},
+		SnapshotsConfig: atev1alpha1.SnapshotsConfig{},
+	}
+	observed := desired.DeepCopy()
+	observed.SnapshotsConfig.OnPause = atev1alpha1.SnapshotScopeFull
+	observed.SnapshotsConfig.OnCommit = atev1alpha1.SnapshotScopeFull
+	observed.SnapshotsConfig.OnResume.FromData = atev1alpha1.ResumeSourceColdBoot
+	observed.Containers[0].Readyz.HTTPGet.Path = defaultActorTemplateReadyzPath
+	observed.Containers[0].Readyz.TimeoutSeconds = defaultActorTemplateReadyzTimeoutSeconds
+
+	if !actorTemplateSpecsEqual(desired, *observed) {
+		t.Fatal("API-defaulted ExternalSlot spec was not equal to its compiled spec")
+	}
+	if desired.SandboxClass != atev1alpha1.SandboxClass(v2translator.SandboxClassHostProcessHardened) || desired.SnapshotsConfig.OnPause != "" || desired.Containers[0].Readyz.TimeoutSeconds != 0 {
+		t.Fatalf("comparison mutated desired spec: %+v", desired)
+	}
+
+	observed.Containers[0].Image = "example.com/different@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if actorTemplateSpecsEqual(desired, *observed) {
+		t.Fatal("materially different ActorTemplate specs compared equal")
+	}
+
+	legacy := atev1alpha1.ActorTemplateSpec{}
+	defaultedLegacy := atev1alpha1.ActorTemplateSpec{
+		WorkerProvider: atev1alpha1.WorkerProviderKubernetesPod,
+		SandboxClass:   atev1alpha1.SandboxClassGvisor,
+	}
+	if !actorTemplateSpecsEqual(legacy, defaultedLegacy) {
+		t.Fatal("defaulted KubernetesPod worker provider was not normalized")
+	}
+}
+
 func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -20,7 +61,7 @@ func TestReconcilerPersistsPairInOrder(t *testing.T) {
 	template := &kagentv1alpha3.AgentTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant", UID: "template-uid"}}
 	harness := &kagentv1alpha3.Harness{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "kagent", UID: "harness-uid"}}
 	desiredActor := &atev1alpha1.ActorTemplate{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant-kagent-revision"}}
-	revision := &v2translator.Revision{Placement: v2translator.RevisionPlacementKubernetesPod, MCPPolicy: v2translator.MCPPolicyV1{
+	revision := &v2translator.Revision{Placement: v2translator.RevisionPlacementKubernetesPod, SandboxClass: v2translator.SandboxClassGvisor, MCPPolicy: v2translator.MCPPolicyV1{
 		Version:  v2translator.MCPPolicyVersionV1,
 		Bindings: []v2translator.MCPPolicyBinding{},
 	}}

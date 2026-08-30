@@ -146,6 +146,7 @@ func TestReconciliationCodingHarnessUsesExternalActorIngress(t *testing.T) {
 			harness.Spec.Workload.Image = "example.com/coding-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			templates := krt.NewStaticCollection(nil, []*kagentv1alpha3.AgentTemplate{template}, opts.WithName("AgentTemplates")...)
 			harnesses := krt.NewStaticCollection(nil, []*kagentv1alpha3.Harness{harness}, opts.WithName("Harnesses")...)
+			actorTemplates := krt.NewStaticCollection[*atev1alpha1.ActorTemplate](nil, nil, opts.WithName("ActorTemplates")...)
 			pairs := newPairCollection(templates, harnesses, opts)
 			reconciliations := newPairReconciliations(
 				pairs,
@@ -158,7 +159,7 @@ func TestReconciliationCodingHarnessUsesExternalActorIngress(t *testing.T) {
 				krt.NewStaticCollection[*corev1.ConfigMap](nil, nil, opts.WithName("ConfigMaps")...),
 				krt.NewStaticCollection[*corev1.Secret](nil, nil, opts.WithName("Secrets")...),
 				krt.NewStaticCollection[*atev1alpha1.WorkerPool](nil, nil, opts.WithName("WorkerPools")...),
-				krt.NewStaticCollection[*atev1alpha1.ActorTemplate](nil, nil, opts.WithName("ActorTemplates")...),
+				actorTemplates,
 				opts,
 			)
 			waitFor(t, func() bool { return len(reconciliations.List()) == 1 })
@@ -169,8 +170,24 @@ func TestReconciliationCodingHarnessUsesExternalActorIngress(t *testing.T) {
 			if state.Revision == nil || state.Revision.Placement != v2translator.RevisionPlacementExternalSlot || state.DesiredActorTemplate == nil {
 				t.Fatalf("coding Harness runtime state = revision=%+v ActorTemplate=%+v", state.Revision, state.DesiredActorTemplate)
 			}
-			if spec := state.DesiredActorTemplate.Spec; spec.WorkerProvider != atev1alpha1.WorkerProviderExternalSlot || spec.WorkerSelector != nil || len(spec.Volumes) != 0 || spec.SnapshotsConfig.Location != "" {
+			if spec := state.DesiredActorTemplate.Spec; spec.WorkerProvider != atev1alpha1.WorkerProviderExternalSlot || spec.SandboxClass != atev1alpha1.SandboxClass(v2translator.SandboxClassHostProcessHardened) || spec.WorkerSelector != nil || len(spec.Volumes) != 0 || spec.SnapshotsConfig.Location != "" {
 				t.Fatalf("coding Harness ActorTemplate is not ExternalSlot-only: %+v", spec)
+			}
+
+			// Kubernetes applies these ActorTemplate CRD defaults before returning
+			// the object. They must not make the immutable compiled revision look
+			// conflicting; sandboxClass itself remains explicit and unchanged.
+			observed := state.DesiredActorTemplate.DeepCopy()
+			observed.Spec.SnapshotsConfig.OnPause = atev1alpha1.SnapshotScopeFull
+			observed.Spec.SnapshotsConfig.OnCommit = atev1alpha1.SnapshotScopeFull
+			observed.Spec.SnapshotsConfig.OnResume.FromData = atev1alpha1.ResumeSourceColdBoot
+			actorTemplates.UpdateObject(observed)
+			waitFor(t, func() bool {
+				states := reconciliations.List()
+				return len(states) == 1 && states[0].ObservedActorTemplate != nil
+			})
+			if observedState := reconciliations.List()[0]; observedState.Failure != nil {
+				t.Fatalf("API-defaulted ExternalSlot ActorTemplate was rejected: %+v", observedState.Failure)
 			}
 		})
 	}

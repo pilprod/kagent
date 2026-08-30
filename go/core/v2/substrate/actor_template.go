@@ -36,7 +36,7 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 	if revisionID.IsZero() {
 		return nil, fmt.Errorf("runtime revision ID is required")
 	}
-	if err := spec.Placement.Validate(); err != nil {
+	if err := validateRevisionPlacementContract(spec); err != nil {
 		return nil, err
 	}
 	name := revisionActorTemplateName(spec.AgentTemplateName, spec.HarnessName, revisionID)
@@ -68,15 +68,12 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 	actorSpec := atev1alpha1.ActorTemplateSpec{
 		Containers:      []atev1alpha1.Container{container},
 		SnapshotsConfig: atev1alpha1.SnapshotsConfig{},
+		SandboxClass:    atev1alpha1.SandboxClass(spec.SandboxClass),
 	}
 	switch spec.Placement {
 	case translator.RevisionPlacementKubernetesPod:
-		if spec.WorkerPoolName == "" || spec.SnapshotLocation == "" {
-			return nil, fmt.Errorf("KubernetesPod runtime revision requires worker pool and snapshot location")
-		}
 		workerKey := types.NamespacedName{Namespace: spec.Namespace, Name: spec.WorkerPoolName}
 		actorSpec.WorkerProvider = atev1alpha1.WorkerProviderKubernetesPod
-		actorSpec.SandboxClass = atev1alpha1.SandboxClassGvisor
 		actorSpec.Containers[0].VolumeMounts = []atev1alpha1.VolumeMount{{Name: durableDataVolume, MountPath: durableDataMount}}
 		actorSpec.WorkerSelector = workerSelectorForPool(workerKey)
 		actorSpec.SnapshotsConfig = atev1alpha1.SnapshotsConfig{
@@ -90,9 +87,6 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 			VolumeSource: atev1alpha1.VolumeSource{DurableDir: &atev1alpha1.DurableDirVolumeSource{}},
 		}}
 	case translator.RevisionPlacementExternalSlot:
-		if spec.WorkerPoolName != "" || spec.SnapshotLocation != "" {
-			return nil, fmt.Errorf("ExternalSlot runtime revision must not include worker pool or snapshot location")
-		}
 		actorSpec.WorkerProvider = atev1alpha1.WorkerProviderExternalSlot
 	}
 
@@ -110,6 +104,26 @@ func ActorTemplateForRevision(spec *translator.Revision, revisionID translator.R
 		Spec: actorSpec,
 	}
 	return template, nil
+}
+
+func validateRevisionPlacementContract(spec *translator.Revision) error {
+	if err := spec.Placement.Validate(); err != nil {
+		return err
+	}
+	if err := spec.SandboxClass.ValidateForPlacement(spec.Placement); err != nil {
+		return err
+	}
+	switch spec.Placement {
+	case translator.RevisionPlacementKubernetesPod:
+		if spec.WorkerPoolName == "" || spec.SnapshotLocation == "" {
+			return fmt.Errorf("KubernetesPod runtime revision requires worker pool and snapshot location")
+		}
+	case translator.RevisionPlacementExternalSlot:
+		if spec.WorkerPoolName != "" || spec.SnapshotLocation != "" {
+			return fmt.Errorf("ExternalSlot runtime revision must not include worker pool or snapshot location")
+		}
+	}
+	return nil
 }
 
 func revisionActorTemplateName(agentTemplate, harness string, revision translator.RevisionID) string {

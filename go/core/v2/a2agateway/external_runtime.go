@@ -142,13 +142,23 @@ func openActorIngress(
 		return nil, fmt.Errorf("ExternalSlot Actor is not running")
 	}
 
-	streamCtx, cancel := context.WithCancel(ctx)
+	// gRPC owns the context passed to a custom ContextDialer and cancels it as
+	// soon as DialContext returns. Actor ingress is the connection returned by
+	// that dialer, so binding the long-lived Control stream directly to ctx
+	// tears the stream down immediately after a successful dial. Preserve the
+	// dial context values, mirror cancellation only while the ingress handshake
+	// is in progress, and let actorIngressConn.Close own cancellation after the
+	// connection has been handed to gRPC.
+	streamCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopDialCancellation := context.AfterFunc(ctx, cancel)
 	stream, err := api.OpenActorIngress(streamCtx)
 	if err != nil {
+		stopDialCancellation()
 		cancel()
 		return nil, fmt.Errorf("open ExternalSlot Actor ingress: %w", err)
 	}
 	fail := func(err error) (net.Conn, error) {
+		stopDialCancellation()
 		_ = stream.CloseSend()
 		cancel()
 		return nil, err
@@ -164,6 +174,9 @@ func openActorIngress(
 	}
 	if frame == nil || frame.GetOpened() == nil {
 		return fail(fmt.Errorf("ExternalSlot Actor ingress returned an invalid acknowledgement"))
+	}
+	if !stopDialCancellation() {
+		return fail(fmt.Errorf("confirm ExternalSlot Actor ingress: %w", context.Cause(ctx)))
 	}
 	return &actorIngressConn{stream: stream, cancel: cancel}, nil
 }

@@ -111,6 +111,7 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		ConfigJSON:         configJSON,
 		AgentCardJSON:      cardJSON,
 		Placement:          v2translator.RevisionPlacementExternalSlot,
+		SandboxClass:       v2translator.SandboxClassHostProcessHardened,
 		Provenance:         provenance,
 		EgressDestinations: compiled.egress,
 	}, nil

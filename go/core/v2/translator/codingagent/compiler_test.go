@@ -93,6 +93,7 @@ func TestCodexAndClaudeCompilersRenderPortableResolvedBundle(t *testing.T) {
 			}
 			require.Equal(t, testImage, revision.Image)
 			require.Equal(t, translator.RevisionPlacementExternalSlot, revision.Placement)
+			require.Equal(t, translator.SandboxClassHostProcessHardened, revision.SandboxClass)
 			require.Empty(t, revision.WorkerPoolName)
 			require.Empty(t, revision.SnapshotLocation)
 			require.NotContains(t, string(revision.AgentCardJSON), `"streaming":true`)
@@ -275,6 +276,40 @@ func TestCodingAgentCompilersFailClosedOnUnauthorizedInputs(t *testing.T) {
 		require.Nil(t, revision)
 		require.ErrorContains(t, err, "requires pinned workload")
 	})
+
+	for _, test := range []struct {
+		name   string
+		source v1alpha3.ArtifactSource
+		want   string
+	}{
+		{
+			name: "standalone skill Git URL",
+			source: v1alpha3.ArtifactSource{Git: &v1alpha3.GitArtifact{
+				URL: "https://example.com/review", Commit: strings.Repeat("a", 40),
+			}},
+			want: "standalone skills require a digest-pinned OCI source",
+		},
+		{
+			name: "standalone skill source path",
+			source: v1alpha3.ArtifactSource{
+				OCI: "ghcr.io/acme/review@sha256:" + strings.Repeat("a", 64), Path: "skills/review",
+			},
+			want: "must use the artifact root",
+		},
+		{
+			name:   "standalone skill mutable OCI",
+			source: v1alpha3.ArtifactSource{OCI: "ghcr.io/acme/review:latest"},
+			want:   "not digest-pinned",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			compiler, input := base()
+			input.Root.Template.Spec.Skills = []v1alpha3.AgentTemplateSkill{{Name: "review", Source: test.source}}
+			revision, err := compiler.Compile(context.Background(), input)
+			require.Nil(t, revision)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
 }
 
 func TestCodingAgentCompilerRejectsDuplicateExactMCPBinding(t *testing.T) {
@@ -333,7 +368,7 @@ func TestCodingAgentCompilerRejectsUnenforceableMCPUpstreams(t *testing.T) {
 				Spec: v1alpha3.RemoteMCPServerSpec{URL: "https://github.com/private/mcp"}},
 			mutate: func(root *v1alpha3.AgentTemplate) {
 				root.Spec.Skills = []v1alpha3.AgentTemplateSkill{{Name: "review", Source: v1alpha3.ArtifactSource{
-					Git: &v1alpha3.GitArtifact{URL: "https://github.com/acme/review", Commit: strings.Repeat("a", 40)},
+					OCI: "github.com/acme/review@sha256:" + strings.Repeat("a", 64),
 				}}}
 			},
 			want: "overlaps direct runtime egress",

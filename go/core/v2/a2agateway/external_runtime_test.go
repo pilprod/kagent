@@ -39,7 +39,8 @@ func (api *externalRuntimeTestAPI) GetActor(_ context.Context, request *ateapipb
 	return proto.Clone(api.actor).(*ateapipb.Actor), nil
 }
 
-func (api *externalRuntimeTestAPI) OpenActorIngress(context.Context) (actorIngressStream, error) {
+func (api *externalRuntimeTestAPI) OpenActorIngress(ctx context.Context) (actorIngressStream, error) {
+	api.stream.ctx = ctx
 	return api.stream, nil
 }
 
@@ -79,6 +80,8 @@ func (stream *externalRuntimeTestStream) Recv() (*ateapipb.ActorIngressFrame, er
 		return proto.Clone(frame).(*ateapipb.ActorIngressFrame), nil
 	case <-stream.closed:
 		return nil, io.EOF
+	case <-stream.ctx.Done():
+		return nil, context.Cause(stream.ctx)
 	}
 }
 
@@ -150,6 +153,68 @@ func TestOpenActorIngressFencesIdentityAndBridgesBytes(t *testing.T) {
 	}
 	if request := api.request; request.GetActor().GetAtespace() != instance.GetNamespace() || request.GetActor().GetName() != externalActorName(instance.GetId()) {
 		t.Fatalf("GetActor request = %#v", request)
+	}
+}
+
+func TestOpenActorIngressSurvivesDialContextCancellationAfterHandshake(t *testing.T) {
+	instance, revision, actor := externalRuntimeTestIdentity()
+	stream := newExternalRuntimeTestStream(openedActorIngressFrame())
+	api := &externalRuntimeTestAPI{actor: actor, stream: stream}
+	dialCtx, cancelDial := context.WithCancel(t.Context())
+	connection, err := openActorIngress(dialCtx, api, instance, revision)
+	if err != nil {
+		cancelDial()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	// grpc cancels a custom dialer's context once it has accepted the returned
+	// net.Conn. The established Actor ingress stream must remain usable until
+	// that net.Conn itself is closed.
+	cancelDial()
+	stream.recv <- &ateapipb.ActorIngressFrame{Frame: &ateapipb.ActorIngressFrame_Data{Data: []byte("still-open")}}
+	buffer := make([]byte, len("still-open"))
+	count, err := connection.Read(buffer)
+	if err != nil || count != len(buffer) || string(buffer) != "still-open" {
+		t.Fatalf("Read() after dial context cancellation = %q, %d, %v", buffer[:count], count, err)
+	}
+}
+
+func TestOpenActorIngressHonorsDialContextCancellationBeforeHandshake(t *testing.T) {
+	instance, revision, actor := externalRuntimeTestIdentity()
+	stream := newExternalRuntimeTestStream()
+	api := &externalRuntimeTestAPI{actor: actor, stream: stream}
+	dialCtx, cancelDial := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		connection, err := openActorIngress(dialCtx, api, instance, revision)
+		if connection != nil {
+			_ = connection.Close()
+		}
+		result <- err
+	}()
+
+	cancelDial()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("openActorIngress() after pre-handshake cancellation = %v, want context.Canceled", err)
+	}
+}
+
+func TestActorIngressConnectionCloseCancelsDurableStream(t *testing.T) {
+	instance, revision, actor := externalRuntimeTestIdentity()
+	stream := newExternalRuntimeTestStream(openedActorIngressFrame())
+	api := &externalRuntimeTestAPI{actor: actor, stream: stream}
+	connection, err := openActorIngress(t.Context(), api, instance, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stream.ctx.Done():
+	case <-t.Context().Done():
+		t.Fatal("Actor ingress stream remained live after connection Close")
 	}
 }
 

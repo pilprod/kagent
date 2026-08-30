@@ -2,6 +2,7 @@ package agentinstance
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
@@ -112,9 +113,107 @@ func TestActorWorkflowForkCreatesSuspendedActorFromCheckpoint(t *testing.T) {
 	}
 }
 
+func TestActorWorkflowCreateExternalSlotResumesBeforeReady(t *testing.T) {
+	instance := &apiv1alpha1.AgentInstance{
+		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
+		PreparedRevision: "revision-external", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
+	}
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
+	store := &lifecycleTestStore{
+		instance: instance,
+		revision: &dbpkg.RuntimeRevision{
+			Revision: "revision-external", Placement: dbpkg.RuntimeRevisionPlacementExternalSlot,
+			ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-claude-revision",
+		},
+		beforeMarkReady: func() {
+			actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]
+			if actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+				t.Fatalf("Actor state at MarkAgentInstanceReady = %s, want RUNNING", actor.GetStatus().GetState())
+			}
+		},
+	}
+
+	created, err := NewActorWorkflow(store, actors).Create(t.Context(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY {
+		t.Fatalf("created instance state = %s, want READY", created.GetState())
+	}
+	if actors.resumeCalls != 1 || store.markReadyCalls != 1 {
+		t.Fatalf("resume calls = %d, mark-ready calls = %d", actors.resumeCalls, store.markReadyCalls)
+	}
+}
+
+func TestActorWorkflowCreateExternalSlotRetryIdempotentlyResumesRunningActor(t *testing.T) {
+	instance := &apiv1alpha1.AgentInstance{
+		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
+		PreparedRevision: "revision-external", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
+	}
+	name := actorName(instance.GetId())
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{
+		actorKey("team-a", name): {
+			Metadata:               &ateapipb.ResourceMetadata{Atespace: "team-a", Name: name, Uid: "actor-uid"},
+			ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-claude-revision",
+			Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
+		},
+	}}
+	store := &lifecycleTestStore{
+		instance: instance,
+		revision: &dbpkg.RuntimeRevision{
+			Revision: "revision-external", Placement: dbpkg.RuntimeRevisionPlacementExternalSlot,
+			ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-claude-revision",
+		},
+	}
+
+	created, err := NewActorWorkflow(store, actors).Create(t.Context(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || actors.resumeCalls != 1 || store.markReadyCalls != 1 {
+		t.Fatalf("created = %+v, resume calls = %d, mark-ready calls = %d", created, actors.resumeCalls, store.markReadyCalls)
+	}
+}
+
+func TestActorWorkflowCreateExternalSlotDoesNotPublishReadyWhenResumeFails(t *testing.T) {
+	tests := []struct {
+		name        string
+		resumeErr   error
+		resumeState ateapipb.ActorState
+	}{
+		{name: "error", resumeErr: errors.New("provider unavailable")},
+		{name: "non-running response", resumeState: ateapipb.ActorState_ACTOR_STATE_RESUMING},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := &apiv1alpha1.AgentInstance{
+				Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
+				PreparedRevision: "revision-external", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
+			}
+			store := &lifecycleTestStore{
+				instance: instance,
+				revision: &dbpkg.RuntimeRevision{
+					Revision: "revision-external", Placement: dbpkg.RuntimeRevisionPlacementExternalSlot,
+					ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-claude-revision",
+				},
+			}
+			actors := &lifecycleTestActors{
+				actors: map[string]*ateapipb.Actor{}, resumeErr: test.resumeErr, resumeState: test.resumeState,
+			}
+
+			if _, err := NewActorWorkflow(store, actors).Create(t.Context(), instance); err == nil {
+				t.Fatal("Create() error = nil")
+			}
+			if instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING || store.markReadyCalls != 0 {
+				t.Fatalf("instance = %+v, mark-ready calls = %d", instance, store.markReadyCalls)
+			}
+		})
+	}
+}
+
 func TestActorWorkflowExternalSlotRejectsSnapshotLifecycleBeforeMutation(t *testing.T) {
 	checkpoint := &dbpkg.AgentInstanceCheckpoint{
-		ID: "checkpoint-1", SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
+		ID: uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc"), SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
 	}
 	tests := []struct {
 		name  string
@@ -200,6 +299,8 @@ type lifecycleTestStore struct {
 	instance        *apiv1alpha1.AgentInstance
 	revision        *dbpkg.RuntimeRevision
 	transitionCalls int
+	markReadyCalls  int
+	beforeMarkReady func()
 }
 
 func (s *lifecycleTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
@@ -207,6 +308,10 @@ func (s *lifecycleTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg
 }
 
 func (s *lifecycleTestStore) MarkAgentInstanceReady(_ context.Context, _ string, authority string) (*apiv1alpha1.AgentInstance, error) {
+	s.markReadyCalls++
+	if s.beforeMarkReady != nil {
+		s.beforeMarkReady()
+	}
 	s.instance.State = apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY
 	s.instance.Operation = apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED
 	s.instance.A2AAuthority = authority
@@ -235,6 +340,8 @@ type lifecycleTestActors struct {
 	createFromSnapshotCalls int
 	deleteCalls             int
 	deleteAnyState          bool
+	resumeErr               error
+	resumeState             ateapipb.ActorState
 }
 
 func actorKey(atespace, name string) string { return atespace + "/" + name }
@@ -281,8 +388,15 @@ func (a *lifecycleTestActors) CreateActorFromSnapshotTag(_ context.Context, ates
 
 func (a *lifecycleTestActors) ResumeActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
 	a.resumeCalls++
+	if a.resumeErr != nil {
+		return nil, a.resumeErr
+	}
 	actor := a.actors[actorKey(atespace, name)]
-	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
+	if a.resumeState != ateapipb.ActorState_ACTOR_STATE_UNSPECIFIED {
+		actor.Status.State = a.resumeState
+	} else {
+		actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
+	}
 	return actor, nil
 }
 

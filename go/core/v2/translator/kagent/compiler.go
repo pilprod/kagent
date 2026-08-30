@@ -120,6 +120,7 @@ func (c *Compiler) Compile(ctx context.Context, input *v2translator.HarnessInput
 		ConfigJSON:         configJSON,
 		AgentCardJSON:      cardJSON,
 		Placement:          v2translator.RevisionPlacementKubernetesPod,
+		SandboxClass:       v2translator.SandboxClassGvisor,
 		WorkerPoolName:     harness.Spec.Substrate.WorkerPoolRef.Name,
 		SnapshotLocation:   harness.Spec.Substrate.SnapshotPolicy.Location,
 		Provenance:         provenance,
