@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "status": "blocked",
+  "blocker": "No immutable public Substrate Go module and matching Helm chart currently expose the ExternalSlot WorkerProvider and OpenActorIngress APIs required by this kagent branch.",
+  "requiredCapabilities": [
+    "pkg/api/v1alpha1.ActorTemplateSpec.WorkerProvider",
+    "pkg/api/v1alpha1.WorkerProviderExternalSlot",
+    "api.Control.OpenActorIngress",
+    "api.ActorIngressFrame"
+  ],
+  "lastIncompatiblePublicRelease": {
+    "goModuleVersion": "v0.0.21",
+    "helmChartVersion": "0.0.21"
+  },
+  "goModule": {
+    "requiredPath": "github.com/agent-substrate/substrate",
+    "replacement": {
+      "path": "github.com/kagent-dev/substrate",
+      "version": null,
+      "sum": null,
+      "goModSum": null
+    },
+    "origin": {
+      "vcs": "git",
+      "url": "https://github.com/kagent-dev/substrate",
+      "commit": null,
+      "ref": null
+    }
+  },
+  "helmChart": {
+    "repository": "oci://ghcr.io/kagent-dev/substrate/helm",
+    "name": "substrate",
+    "version": null,
+    "appVersion": null,
+    "registryDigest": null,
+    "packageSha256": null
+  }
+}

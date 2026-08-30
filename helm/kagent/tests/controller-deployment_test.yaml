@@ -47,6 +47,29 @@ tests:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/kagent-dev/kagent/controller:v1.0.0
 
+  - it: should prefer an immutable controller digest over every tag
+    template: controller-deployment.yaml
+    set:
+      tag: "global-tag-must-not-render"
+      controller:
+        image:
+          tag: "component-tag-must-not-render"
+          digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/kagent-dev/kagent/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - it: should reject a malformed controller digest
+    template: controller-deployment.yaml
+    set:
+      controller:
+        image:
+          digest: "sha256:not-a-digest"
+    asserts:
+      - failedTemplate:
+          errorMessage: "controller.image.digest must be a lowercase sha256 digest"
+
   - it: should have correct controller resources
     template: controller-deployment.yaml
     asserts:

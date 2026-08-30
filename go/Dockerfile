@@ -1,7 +1,9 @@
 ### STAGE 1: base image
 ARG BASE_IMAGE_REGISTRY=cgr.dev
+ARG GO_BUILDER_DIGEST=sha256:f83f9c10f9c18d7b9a71d241b63b8824de5a0ad6caea4255406e42b4005320fe
+ARG ALPINE_IMAGE=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 ARG BUILDPLATFORM
-FROM --platform=$BUILDPLATFORM $BASE_IMAGE_REGISTRY/chainguard/go:latest AS builder
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE_REGISTRY}/chainguard/go:latest@${GO_BUILDER_DIGEST} AS builder
 ARG TARGETARCH
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
@@ -21,6 +23,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod,rw      \
 COPY api/ api/
 COPY core/ core/
 COPY adk/ adk/
+COPY harness/ harness/
 
 # Build
 ARG LDFLAGS
@@ -30,7 +33,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod,rw             \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "$LDFLAGS" -o /app "$BUILD_PACKAGE"
 
 ### STAGE 2: final image
-FROM alpine:3.22
+FROM ${ALPINE_IMAGE}
 ARG TARGETPLATFORM
 
 RUN apk add --no-cache bash ca-certificates git && \

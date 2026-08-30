@@ -277,6 +277,9 @@ controller:
     registry: ""
     repository: kagent-dev/kagent/controller
     tag: "" # Will default to global, then Chart version
+    # -- Immutable image digest. When set, this takes precedence over both the
+    # component and global tags and must be a full sha256 digest.
+    digest: ""
     pullPolicy: ""
   resources:
     requests:
@@ -424,6 +427,9 @@ ui:
     registry: ""
     repository: kagent-dev/kagent/ui
     tag: ""
+    # -- Immutable image digest. When set, this takes precedence over both the
+    # component and global tags and must be a full sha256 digest.
+    digest: ""
     pullPolicy: ""
   resources:
     requests:

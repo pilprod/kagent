@@ -51,6 +51,31 @@ Allows overriding it for multi-namespace deployments in combined charts.
 {{- end }}
 
 {{/*
+Render a component image reference. A digest is deliberately component-local:
+one global digest cannot identify the independently-built controller and UI
+images. When present it wins over both tag fields and is validated at template
+time so a release cannot silently fall back to a mutable tag.
+
+Call with a dict: (dict "root" . "image" .Values.controller.image "path" "controller.image")
+*/}}
+{{- define "kagent.componentImage" -}}
+{{- $root := .root -}}
+{{- $image := .image -}}
+{{- $path := .path -}}
+{{- $registry := $image.registry | default $root.Values.registry -}}
+{{- $repository := required (printf "%s.repository is required" $path) $image.repository -}}
+{{- if $image.digest -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" ($image.digest | toString)) -}}
+{{- fail (printf "%s.digest must be a lowercase sha256 digest" $path) -}}
+{{- end -}}
+{{- printf "%s/%s@%s" $registry $repository $image.digest -}}
+{{- else -}}
+{{- $tag := coalesce $root.Values.tag $image.tag $root.Chart.Version -}}
+{{- printf "%s/%s:%s" $registry $repository $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Namespaces where Substrate ate-api-server needs read access to Secrets and ConfigMaps
 referenced by generated ActorTemplates (install namespace plus rbac.namespaces).
 */}}

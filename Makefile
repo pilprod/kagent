@@ -5,6 +5,7 @@
 DOCKER_REGISTRY ?= localhost:5001
 BASE_IMAGE_REGISTRY ?= cgr.dev
 DOCKER_REPO ?= kagent-dev/kagent
+GO_MODULE ?= github.com/kagent-dev/kagent/go
 HELM_REPO ?= oci://ghcr.io/kagent-dev
 HELM_DIST_FOLDER ?= dist
 
@@ -55,14 +56,21 @@ UI_IMAGE_NAME ?= ui
 KAGENT_ADK_IMAGE_NAME ?= kagent-adk
 GOLANG_ADK_IMAGE_NAME ?= golang-adk
 
+CLAUDE_HARNESS_IMAGE_NAME ?= claude-harness
+CODEX_HARNESS_IMAGE_NAME ?= codex-harness
 CONTROLLER_IMAGE_TAG ?= $(VERSION)
 UI_IMAGE_TAG ?= $(VERSION)
 KAGENT_ADK_IMAGE_TAG ?= $(VERSION)
 GOLANG_ADK_IMAGE_TAG ?= $(VERSION)
+CLAUDE_HARNESS_IMAGE_TAG ?= $(VERSION)
+CODEX_HARNESS_IMAGE_TAG ?= $(VERSION)
+KAGENT_CLAUDE_NATIVE_OUTPUT ?= dist/kagent-claude
 CONTROLLER_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(CONTROLLER_IMAGE_NAME):$(CONTROLLER_IMAGE_TAG)
 UI_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(UI_IMAGE_NAME):$(UI_IMAGE_TAG)
 KAGENT_ADK_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(KAGENT_ADK_IMAGE_NAME):$(KAGENT_ADK_IMAGE_TAG)
 GOLANG_ADK_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(GOLANG_ADK_IMAGE_NAME):$(GOLANG_ADK_IMAGE_TAG)
+CLAUDE_HARNESS_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(CLAUDE_HARNESS_IMAGE_NAME):$(CLAUDE_HARNESS_IMAGE_TAG)
+CODEX_HARNESS_IMG ?= $(DOCKER_REGISTRY)/$(DOCKER_REPO)/$(CODEX_HARNESS_IMAGE_NAME):$(CODEX_HARNESS_IMAGE_TAG)
 
 #take from go/go.mod
 AWK ?= $(shell command -v gawk || command -v awk)
@@ -70,9 +78,9 @@ TOOLS_GO_VERSION ?= $(shell $(AWK) '/^go / { print $$2 }' go/go.mod)
 export GOTOOLCHAIN=go$(TOOLS_GO_VERSION)
 
 # Version information for the build
-LDFLAGS := -X github.com/$(DOCKER_REPO)/go/core/internal/version.Version=$(VERSION) \
-           -X github.com/$(DOCKER_REPO)/go/core/internal/version.GitCommit=$(GIT_COMMIT) \
-           -X github.com/$(DOCKER_REPO)/go/core/internal/version.BuildDate=$(BUILD_DATE)
+LDFLAGS := -X $(GO_MODULE)/core/internal/version.Version=$(VERSION) \
+           -X $(GO_MODULE)/core/internal/version.GitCommit=$(GIT_COMMIT) \
+           -X $(GO_MODULE)/core/internal/version.BuildDate=$(BUILD_DATE)
 
 #tools versions
 TOOLS_UV_VERSION ?= 0.10.4
@@ -219,17 +227,21 @@ build-all: ## Build all images for amd64+arm64 without pushing (outputs to /dev/
 build-all: BUILD_ARGS ?= --progress=plain --builder $(BUILDX_BUILDER_NAME) --platform linux/amd64,linux/arm64 --output type=tar,dest=/dev/null
 build-all: proto-generate buildx-create
 	$(DOCKER_BUILDER) $(BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -f go/Dockerfile     ./go
+	$(DOCKER_BUILDER) $(BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -f go/harness/claude/Dockerfile ./go
+	$(DOCKER_BUILDER) $(BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -f go/harness/codex/Dockerfile ./go
 	$(DOCKER_BUILDER) $(BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -f ui/Dockerfile     ./ui
 	$(DOCKER_BUILDER) $(BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -f python/Dockerfile ./python
 
 .PHONY: build
 build: ## Build and push all component images
-build: buildx-create build-ui build-kagent-adk build-golang-adk build-controller
+build: buildx-create build-ui build-kagent-adk build-golang-adk build-claude-harness build-codex-harness build-controller
 	@echo "Build completed successfully."
 	@echo "Controller Image: $(CONTROLLER_IMG)"
 	@echo "UI Image: $(UI_IMG)"
 	@echo "Kagent ADK Image: $(KAGENT_ADK_IMG)"
 	@echo "Golang ADK Image: $(GOLANG_ADK_IMG)"
+	@echo "Claude Harness Image: $(CLAUDE_HARNESS_IMG)"
+	@echo "Codex Harness Image: $(CODEX_HARNESS_IMG)"
 
 .PHONY: build-monitor
 build-monitor: ## Watch BuildKit process list inside the buildx container
@@ -251,12 +263,19 @@ build-cli-local: proto-generate
 	make -C go clean
 	make -C go core/bin/kagent-local
 
+.PHONY: build-kagent-claude-native-local
+build-kagent-claude-native-local: ## Build the code-only kagent-claude adapter for this host without bundling Claude Code
+	mkdir -p "$(dir $(KAGENT_CLAUDE_NATIVE_OUTPUT))"
+	cd go && CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$(abspath $(KAGENT_CLAUDE_NATIVE_OUTPUT))" ./harness/claude/cmd
+
 .PHONY: build-img-versions
 build-img-versions: ## Print the fully-qualified image tags for all components
 	@echo controller=$(CONTROLLER_IMG)
 	@echo ui=$(UI_IMG)
 	@echo kagent-adk=$(KAGENT_ADK_IMG)
 	@echo golang-adk=$(GOLANG_ADK_IMG)
+	@echo claude-harness=$(CLAUDE_HARNESS_IMG)
+	@echo codex-harness=$(CODEX_HARNESS_IMG)
 
 .PHONY: controller-manifests
 controller-manifests: ## Regenerate CRD manifests and copy them into the Helm chart
@@ -288,6 +307,18 @@ build-golang-adk: ## Build and push the Go ADK image
 build-golang-adk: proto-generate buildx-create
 	$(DOCKER_BUILDER) $(DOCKER_BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) --build-arg BUILD_PACKAGE=adk/cmd/main.go -t $(GOLANG_ADK_IMG) -f go/Dockerfile ./go
 	$(DOCKER_PUSH) $(GOLANG_ADK_IMG)
+
+.PHONY: build-claude-harness
+build-claude-harness: ## Build and push the native Claude Harness image
+build-claude-harness: buildx-create
+	$(DOCKER_BUILDER) $(DOCKER_BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -t $(CLAUDE_HARNESS_IMG) -f go/harness/claude/Dockerfile ./go
+	$(DOCKER_PUSH) $(CLAUDE_HARNESS_IMG)
+
+.PHONY: build-codex-harness
+build-codex-harness: ## Build and push the native Codex Harness image
+build-codex-harness: buildx-create
+	$(DOCKER_BUILDER) $(DOCKER_BUILD_ARGS) $(TOOLS_IMAGE_BUILD_ARGS) -t $(CODEX_HARNESS_IMG) -f go/harness/codex/Dockerfile ./go
+	$(DOCKER_PUSH) $(CODEX_HARNESS_IMG)
 
 .PHONY: push
 push: ## Push all component images (controller, ui, ADKs)

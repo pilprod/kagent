@@ -66,7 +66,7 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          image: "{{ .Values.ui.image.registry | default .Values.registry  }}/{{ .Values.ui.image.repository }}:{{ coalesce .Values.tag .Values.ui.image.tag .Chart.Version }}"
+          image: {{ include "kagent.componentImage" (dict "root" . "image" .Values.ui.image "path" "ui.image") | quote }}
           imagePullPolicy: {{ .Values.ui.image.pullPolicy | default .Values.imagePullPolicy }}
           {{- /* The UI is a static bundle; these are read by init.sh, which
                  renders them into the config.json the browser fetches at

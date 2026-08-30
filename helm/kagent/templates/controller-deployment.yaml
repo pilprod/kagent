@@ -97,7 +97,7 @@ spec:
       {{- end }}
       containers:
         - name: controller
-          image: "{{ .Values.controller.image.registry | default .Values.registry  }}/{{ .Values.controller.image.repository }}:{{ coalesce .Values.tag .Values.controller.image.tag .Chart.Version }}"
+          image: {{ include "kagent.componentImage" (dict "root" . "image" .Values.controller.image "path" "controller.image") | quote }}
           imagePullPolicy: {{ .Values.controller.image.pullPolicy | default .Values.imagePullPolicy }}
           env:
             - name: KAGENT_NAMESPACE

@@ -4,16 +4,56 @@ on:
   push:
     tags:
     - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version number'
+    # Fork preview tags are owned exclusively by fork-preview-release.yaml.
+    # Letting this generic rail see them would race its fail-closed tag checks
+    # and publish charts, images, and Python packages outside its evidence.
+    - "!v*.kap.*"
+
+concurrency:
+  group: generic-release-${{ github.ref }}
+  cancel-in-progress: false
 
 # https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#release
 # GITHUB_SHA = Last commit in the tagged release
 # GITHUB_REF = Tag ref of release refs/tags/<tag_name>
 jobs:
+  guard-release-coordinate:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout the tagged source
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Require an annotated release tag on the default branch
+      shell: bash
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        [[ "${GITHUB_REF_TYPE}" == "tag" ]]
+        [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+          echo "release tag is not a strict v-prefixed SemVer coordinate" >&2
+          exit 1
+        }
+        [[ "${GITHUB_REF_NAME}" != *".kap."* ]] || {
+          echo "fork preview coordinates are owned exclusively by fork-preview-release.yaml" >&2
+          exit 1
+        }
+        [[ "$(git cat-file -t "${GITHUB_REF}")" == "tag" ]] || {
+          echo "generic releases require an annotated tag" >&2
+          exit 1
+        }
+        git fetch --no-tags origin \
+          "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+        git merge-base --is-ancestor \
+          "${GITHUB_SHA}" "refs/remotes/origin/${DEFAULT_BRANCH}" || {
+          echo "release tag commit is not reachable from the default branch" >&2
+          exit 1
+        }
+
   push-images:
+    needs: guard-release-coordinate
     strategy:
       matrix:
         image:
@@ -21,6 +61,8 @@ jobs:
           - ui
           - kagent-adk
           - golang-adk
+          # A preinstalled Claude Code image must not be published until the
+          # Anthropic Commercial Terms gate is explicitly satisfied.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,6 +128,7 @@ jobs:
         fi
         make helm-publish
   release-python-packages:
+    needs: guard-release-coordinate
     runs-on: ubuntu-latest
     permissions:
       contents: read
