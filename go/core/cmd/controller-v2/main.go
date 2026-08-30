@@ -166,10 +166,11 @@ func main() {
 	system := systemservice.NewService(systemservice.WithInventory(manager.GetClient(), watchNamespaces, authorizer, actors))
 	feedback := feedbackservice.NewService(store)
 	memory := memoryservice.NewService(store)
-	instanceWorkflow := agentinstance.NewActorWorkflow(store, actors)
+	runtimeLifecycle := substrate.NewLifecycle(store, actors)
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeLifecycle)
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
-	gatewayDialer, err := a2agateway.NewProviderAwareRuntimeDialer(
+	gatewayConnector, err := substrate.NewProviderAwareConnector(
 		env("SUBSTRATE_ATENET_ROUTER_URL", substrate.DefaultAtenetRouterURL),
 		authenticator,
 		store,
@@ -178,7 +179,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	gateway := a2agateway.New(store, authorizer, gatewayDialer, instanceWorkflow,
+	gateway := a2agateway.New(store, authorizer, gatewayConnector, instanceWorkflow,
 		env("A2A_GATEWAY_URL", "http://127.0.0.1:8084"))
 	mcpHandler, err := v2mcp.New(instances, checkpoints, gateway)
 	if err != nil {
