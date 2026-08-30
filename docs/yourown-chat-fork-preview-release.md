@@ -12,8 +12,8 @@ until the Anthropic Commercial Terms gate is explicitly satisfied.
 ## Preconditions
 
 1. `.github/gke-preview-substrate-pin.json` has `status: ready` and identifies
-   one compatible public `github.com/kagent-dev/substrate` Go module release
-   plus the matching `oci://ghcr.io/kagent-dev/substrate/helm/substrate` chart.
+   the exact public `github.com/pilprod/substrate` v0.0.22 Go module release
+   plus the matching `oci://ghcr.io/pilprod/substrate/helm/substrate` chart.
    The manifest is intentionally blocked while the last public release lacks
    `ExternalSlot` and `OpenActorIngress`; null pin fields must not be invented.
 2. Both kagent and the Local Agent Host use that exact immutable public
@@ -27,10 +27,11 @@ until the Anthropic Commercial Terms gate is explicitly satisfied.
 
 ## 1. Publish and pin compatible Substrate artifacts
 
-Publish one official immutable Substrate release containing every capability
-listed in `.github/gke-preview-substrate-pin.json`. The Go module and Helm chart
-must come from the declared `kagent-dev` identities and share the same semantic
-version. Record the module checksums and origin tag/commit together with the
+Publish the reviewed immutable `pilprod/substrate` v0.0.22 release containing
+every capability listed in `.github/gke-preview-substrate-pin.json`. The Go
+module and Helm chart must come from the exact declared fork identities and
+share the same semantic version. Record the module checksums and origin
+tag/commit together with the
 chart registry digest and package SHA-256, then change the manifest to
 `status: ready`.
 

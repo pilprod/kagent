@@ -23,10 +23,10 @@ jq -e '
     "api.ActorIngressFrame"
   ] and
   .goModule.requiredPath == "github.com/agent-substrate/substrate" and
-  .goModule.replacement.path == "github.com/kagent-dev/substrate" and
+  .goModule.replacement.path == "github.com/pilprod/substrate" and
   .goModule.origin.vcs == "git" and
-  .goModule.origin.url == "https://github.com/kagent-dev/substrate" and
-  .helmChart.repository == "oci://ghcr.io/kagent-dev/substrate/helm" and
+  .goModule.origin.url == "https://github.com/pilprod/substrate" and
+  .helmChart.repository == "oci://ghcr.io/pilprod/substrate/helm" and
   .helmChart.name == "substrate"
 ' "${pin_file}" >/dev/null || fail "pin manifest semantic identity contract is malformed"
 
