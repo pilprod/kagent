@@ -524,12 +524,6 @@ func TestGatewayReadsRoutingHeadersFromGRPC(t *testing.T) {
 	}
 }
 
-func TestRuntimeDialerRequiresAuthority(t *testing.T) {
-	if _, err := (&RuntimeDialer{}).Dial(t.Context(), &apiv1alpha1.AgentInstance{}); err == nil {
-		t.Fatal("Dial() accepted an empty runtime authority")
-	}
-}
-
 func TestGatewayReadsTasksWithoutDialingRuntime(t *testing.T) {
 	task := &a2atype.Task{
 		ID: gatewayTestID, ContextID: gatewayTestID,

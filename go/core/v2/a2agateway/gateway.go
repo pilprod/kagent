@@ -18,7 +18,6 @@ import (
 	"time"
 
 	a2atype "github.com/a2aproject/a2a-go/v2/a2a"
-	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2aevent"
 	"github.com/a2aproject/a2a-go/v2/a2aext"
 	"github.com/a2aproject/a2a-go/v2/a2apb/v1/pbconv"
@@ -29,6 +28,7 @@ import (
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -53,10 +53,6 @@ type instanceStore interface {
 	StoreAgentInstanceTaskEvent(context.Context, string, *a2atype.Task, a2atype.Event, *dbpkg.AgentInstanceTaskSnapshot) error
 	GetAgentInstanceTask(context.Context, string, string) (*a2atype.Task, error)
 	ListAgentInstanceTasks(context.Context, string, string, a2atype.TaskState, *time.Time, int) ([]*a2atype.Task, int, error)
-}
-
-type runtimeDialer interface {
-	Dial(context.Context, *apiv1alpha1.AgentInstance) (*a2aclient.Client, error)
 }
 
 type instanceWorkflow interface {
@@ -97,7 +93,7 @@ func (c *memoryRuntimeCoordinator) Quiesce(instanceID string) func() {
 type Gateway struct {
 	store       instanceStore
 	authorizer  auth.Authorizer
-	dialer      runtimeDialer
+	dialer      runtimebackend.Connector
 	workflow    instanceWorkflow
 	gatewayURL  string
 	events      eventqueue.Manager
@@ -112,11 +108,11 @@ var _ a2asrv.RequestHandler = (*Gateway)(nil)
 //
 // ponytail: coordination is process-local. Gateway deployments must remain at
 // one replica until this is replaced by a PostgreSQL-backed coordinator.
-func New(store instanceStore, authorizer auth.Authorizer, dialer runtimeDialer, workflow instanceWorkflow, gatewayURL string) a2asrv.RequestHandler {
+func New(store instanceStore, authorizer auth.Authorizer, dialer runtimebackend.Connector, workflow instanceWorkflow, gatewayURL string) a2asrv.RequestHandler {
 	return newGateway(store, authorizer, dialer, workflow, gatewayURL, processRuntimeCoordinator)
 }
 
-func newGateway(store instanceStore, authorizer auth.Authorizer, dialer runtimeDialer, workflow instanceWorkflow, gatewayURL string, coordinator runtimeCoordinator) a2asrv.RequestHandler {
+func newGateway(store instanceStore, authorizer auth.Authorizer, dialer runtimebackend.Connector, workflow instanceWorkflow, gatewayURL string, coordinator runtimeCoordinator) a2asrv.RequestHandler {
 	return &a2asrv.InterceptedHandler{
 		Handler: &Gateway{
 			store: store, authorizer: authorizer, dialer: dialer, workflow: workflow,

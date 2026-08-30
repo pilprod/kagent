@@ -55,6 +55,7 @@ import (
 	a2agateway "github.com/kagent-dev/kagent/go/core/v2/a2agateway"
 	"github.com/kagent-dev/kagent/go/core/v2/agentinstance"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
+	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -525,7 +526,8 @@ func Start(getExtensionConfig GetExtensionConfig, extraSources []migrations.Sour
 		setupLog.Error(err, "unable to initialize AgentTemplate preparation")
 		os.Exit(1)
 	}
-	instanceWorkflow := agentinstance.NewActorWorkflow(dbClient, substrateAteClient)
+	runtimeLifecycle := v2substrate.NewLifecycle(dbClient, substrateAteClient)
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(dbClient, runtimeLifecycle)
 	if err := mgr.Add(v2Runtime); err != nil {
 		setupLog.Error(err, "unable to register v2 KRT runtime")
 		os.Exit(1)
@@ -543,7 +545,7 @@ func Start(getExtensionConfig GetExtensionConfig, extraSources []migrations.Sour
 	// Dials an instance's runtime through the atenet router, which is how the A2A
 	// gateway reaches a private actor: the instance's authority is not routable
 	// directly.
-	a2aGatewayDialer, err := a2agateway.NewRuntimeDialer(atenetRouterURL, extensionCfg.Authenticator)
+	a2aGatewayConnector, err := v2substrate.NewConnector(atenetRouterURL, extensionCfg.Authenticator)
 	if err != nil {
 		setupLog.Error(err, "unable to create A2A runtime dialer")
 		os.Exit(1)
@@ -622,7 +624,7 @@ func Start(getExtensionConfig GetExtensionConfig, extraSources []migrations.Sour
 	// use, rather than a second over the same client.
 	a2aHandler := extensionCfg.A2AHandler
 	if a2aHandler == nil {
-		a2aHandler = a2agateway.New(dbClient, extensionCfg.Authorizer, a2aGatewayDialer,
+		a2aHandler = a2agateway.New(dbClient, extensionCfg.Authorizer, a2aGatewayConnector,
 			instanceWorkflow, cfg.A2ABaseUrl)
 	}
 

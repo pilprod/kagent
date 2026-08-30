@@ -43,6 +43,7 @@ import (
 	"github.com/kagent-dev/kagent/go/core/v2/checkpoint"
 	v2controller "github.com/kagent-dev/kagent/go/core/v2/controller"
 	v2mcp "github.com/kagent-dev/kagent/go/core/v2/mcp"
+	v2substrate "github.com/kagent-dev/kagent/go/core/v2/substrate"
 	"golang.org/x/sync/errgroup"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -118,17 +119,18 @@ func main() {
 
 	authenticator := &authimpl.UnsecureAuthenticator{}
 	authorizer := &authimpl.NoopAuthorizer{}
-	instanceWorkflow := agentinstance.NewActorWorkflow(store, actors)
+	runtimeLifecycle := v2substrate.NewLifecycle(store, actors)
+	instanceWorkflow := agentinstance.NewRuntimeWorkflow(store, runtimeLifecycle)
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
-	gatewayDialer, err := a2agateway.NewRuntimeDialer(
+	gatewayConnector, err := v2substrate.NewConnector(
 		env("SUBSTRATE_ATENET_ROUTER_URL", legacysubstrate.DefaultAtenetRouterURL),
 		authenticator,
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-	gateway := a2agateway.New(store, authorizer, gatewayDialer, instanceWorkflow,
+	gateway := a2agateway.New(store, authorizer, gatewayConnector, instanceWorkflow,
 		env("A2A_GATEWAY_URL", "http://127.0.0.1:8084"))
 	mcpHandler, err := v2mcp.New(instances, checkpoints, gateway)
 	if err != nil {
@@ -147,7 +149,9 @@ func main() {
 		AgentTemplateService: kubecrud.NewService(manager.GetClient(), authorizer, &kagentv1alpha3.AgentTemplate{}, &kagentv1alpha3.AgentTemplateList{}, "AgentTemplate"),
 		HarnessService:       kubecrud.NewService(manager.GetClient(), authorizer, &kagentv1alpha3.Harness{}, &kagentv1alpha3.HarnessList{}, "Harness"),
 		CheckpointService:    checkpoints,
-		A2AHandler:           gateway,
+		// The gateway and lifecycle service share one runtime workflow so a
+		// quiescent turn is suspended through the same backend that owns it.
+		A2AHandler: gateway,
 	})
 	if err != nil {
 		log.Fatal(err)

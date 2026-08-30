@@ -2,63 +2,54 @@ package agentinstance
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"testing"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestActorWorkflowLifecycle(t *testing.T) {
+func TestRuntimeWorkflowLifecycle(t *testing.T) {
 	instance := &apiv1alpha1.AgentInstance{
 		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
 		PreparedRevision: "revision-1", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
 	}
-	store := &lifecycleTestStore{
-		instance: instance,
-		revision: &dbpkg.RuntimeRevision{
-			Revision: "revision-1", ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
-		},
+	store := &workflowTestStore{instance: instance}
+	snapshot := &dbpkg.AgentInstanceTaskSnapshot{
+		Atespace: "team-a", Name: "snapshot-1", UID: "snapshot-uid", ContentScope: "DATA",
 	}
-	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
-	workflow := NewActorWorkflow(store, actors)
+	runtime := &workflowTestRuntime{
+		endpoint: runtimebackend.Endpoint{A2AAuthority: "runtime.internal"}, snapshot: snapshot,
+	}
+	workflow := NewRuntimeWorkflow(store, runtime)
 
-	created, err := workflow.Create(context.Background(), instance)
+	created, err := workflow.Create(t.Context(), instance)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || created.GetA2AAuthority() == "" {
+	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || created.GetA2AAuthority() != "runtime.internal" {
 		t.Fatalf("created instance = %+v", created)
 	}
-	if len(actors.actors) != 1 {
-		t.Fatalf("actors = %v", actors.actors)
-	}
-	if actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]; actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
-		t.Fatalf("created Actor status = %s", actor.GetStatus().GetState())
-	}
-	boundary, err := workflow.Quiesce(context.Background(), created)
+	boundary, err := workflow.Quiesce(t.Context(), created)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || boundary.Name != "snapshot-1" || boundary.UID != "snapshot-uid" {
+	if created.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || boundary != snapshot {
 		t.Fatalf("quiesced instance = %+v, boundary = %+v", created, boundary)
 	}
 
-	suspended, err := workflow.Suspend(context.Background(), created)
+	suspended, err := workflow.Suspend(t.Context(), created)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if suspended.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED || suspended.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
 		t.Fatalf("suspended instance = %+v", suspended)
 	}
-	if actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]; actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
-		t.Fatalf("suspended Actor status = %s", actor.GetStatus().GetState())
-	}
 
-	resumed, err := workflow.Resume(context.Background(), suspended)
+	resumed, err := workflow.Resume(t.Context(), suspended)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,140 +57,168 @@ func TestActorWorkflowLifecycle(t *testing.T) {
 		t.Fatalf("resumed instance = %+v", resumed)
 	}
 
-	deleted, err := workflow.Delete(context.Background(), resumed)
+	deleted, err := workflow.Delete(t.Context(), resumed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil || len(actors.actors) != 0 {
-		t.Fatalf("deleted instance = %+v, actors = %v", deleted, actors.actors)
+	if deleted.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_DELETED || store.instance != nil {
+		t.Fatalf("deleted instance = %+v", deleted)
+	}
+	wantCalls := []string{"create", "quiesce", "suspend", "resume", "delete"}
+	if !slices.Equal(runtime.calls, wantCalls) {
+		t.Fatalf("runtime calls = %v, want %v", runtime.calls, wantCalls)
 	}
 }
 
-func TestActorWorkflowForkCreatesSuspendedActorFromCheckpoint(t *testing.T) {
+func TestRuntimeWorkflowForkPublishesBackendAuthority(t *testing.T) {
 	instance := &apiv1alpha1.AgentInstance{
 		Id: "fork-1", Namespace: "team-a", PreparedRevision: "revision-1",
 		State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
 	}
-	store := &lifecycleTestStore{
-		instance: instance,
-		revision: &dbpkg.RuntimeRevision{
-			Revision: "revision-1", ActorTemplateNamespace: "team-a", ActorTemplateName: "assistant-kagent-revision",
-		},
-	}
-	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
+	store := &workflowTestStore{instance: instance}
 	checkpoint := &dbpkg.AgentInstanceCheckpoint{
 		ID: "checkpoint-1", SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
 	}
-	fork, err := NewActorWorkflow(store, actors).Fork(context.Background(), instance, checkpoint)
+	runtime := &workflowTestRuntime{endpoint: runtimebackend.Endpoint{A2AAuthority: "fork.internal"}}
+
+	fork, err := NewRuntimeWorkflow(store, runtime).Fork(t.Context(), instance, checkpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]
-	if fork.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY ||
-		actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED ||
-		actor.GetSourceSnapshotTag().GetName() != "checkpoint-checkpoint-1" {
-		t.Fatalf("fork = %+v, actor = %+v", fork, actor)
+	if fork.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || fork.GetA2AAuthority() != "fork.internal" {
+		t.Fatalf("fork = %+v", fork)
 	}
-	instance.State = apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING
-	store.instance = instance
-	actor.SourceSnapshotTag.Name = "wrong-tag"
-	if _, err := NewActorWorkflow(store, actors).Fork(context.Background(), instance, checkpoint); err == nil {
-		t.Fatal("Fork() accepted an existing Actor with the wrong snapshot tag")
+	if runtime.checkpoint != checkpoint {
+		t.Fatalf("runtime checkpoint = %+v, want %+v", runtime.checkpoint, checkpoint)
 	}
 }
 
-type lifecycleTestStore struct {
-	instance *apiv1alpha1.AgentInstance
-	revision *dbpkg.RuntimeRevision
+func TestRuntimeWorkflowRetriesJoinedOperationAfterDatabaseFailure(t *testing.T) {
+	instance := &apiv1alpha1.AgentInstance{
+		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a",
+		PreparedRevision: "revision-1", A2AAuthority: "runtime.internal",
+		State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
+	}
+	store := &workflowTestStore{instance: instance, failFinishOnce: true}
+	runtime := &workflowTestRuntime{}
+	workflow := NewRuntimeWorkflow(store, runtime)
+
+	if _, err := workflow.Suspend(t.Context(), instance); err == nil {
+		t.Fatal("Suspend() succeeded despite the injected database failure")
+	}
+	if store.instance.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY || store.instance.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_SUSPEND {
+		t.Fatalf("failed Suspend() instance = %+v", store.instance)
+	}
+
+	suspended, err := workflow.Suspend(t.Context(), store.instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suspended.GetState() != apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_SUSPENDED || suspended.GetOperation() != apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
+		t.Fatalf("retried Suspend() instance = %+v", suspended)
+	}
+	if want := []string{"suspend", "suspend"}; !slices.Equal(runtime.calls, want) {
+		t.Fatalf("runtime calls = %v, want %v", runtime.calls, want)
+	}
 }
 
-func (s *lifecycleTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
-	return s.revision, nil
+func TestRuntimeWorkflowRejectsEmptyBackendAuthority(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*RuntimeWorkflow, *apiv1alpha1.AgentInstance) error
+	}{
+		{
+			name: "create",
+			run: func(workflow *RuntimeWorkflow, instance *apiv1alpha1.AgentInstance) error {
+				_, err := workflow.Create(t.Context(), instance)
+				return err
+			},
+		},
+		{
+			name: "fork",
+			run: func(workflow *RuntimeWorkflow, instance *apiv1alpha1.AgentInstance) error {
+				_, err := workflow.Fork(t.Context(), instance, &dbpkg.AgentInstanceCheckpoint{})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance := &apiv1alpha1.AgentInstance{
+				Id: "instance-1", State: apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING,
+			}
+			if err := test.run(NewRuntimeWorkflow(&workflowTestStore{instance: instance}, &workflowTestRuntime{}), instance); err == nil {
+				t.Fatal("operation accepted an empty runtime authority")
+			}
+		})
+	}
 }
 
-func (s *lifecycleTestStore) MarkAgentInstanceReady(_ context.Context, _ string, authority string) (*apiv1alpha1.AgentInstance, error) {
+type workflowTestStore struct {
+	instance       *apiv1alpha1.AgentInstance
+	failFinishOnce bool
+}
+
+func (s *workflowTestStore) MarkAgentInstanceReady(_ context.Context, _ string, authority string) (*apiv1alpha1.AgentInstance, error) {
 	s.instance.State = apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY
 	s.instance.Operation = apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED
 	s.instance.A2AAuthority = authority
 	return s.instance, nil
 }
 
-func (s *lifecycleTestStore) TransitionAgentInstance(_ context.Context, instance *apiv1alpha1.AgentInstance, expectedState apiv1alpha1.AgentInstanceState, expectedOperation apiv1alpha1.AgentInstanceOperation) (*apiv1alpha1.AgentInstance, error) {
+func (s *workflowTestStore) TransitionAgentInstance(_ context.Context, instance *apiv1alpha1.AgentInstance, expectedState apiv1alpha1.AgentInstanceState, expectedOperation apiv1alpha1.AgentInstanceOperation) (*apiv1alpha1.AgentInstance, error) {
 	if s.instance.GetState() != expectedState || s.instance.GetOperation() != expectedOperation {
 		return s.instance, dbpkg.ErrAgentInstanceConflict
+	}
+	if s.failFinishOnce && expectedOperation == apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_SUSPEND && instance.GetOperation() == apiv1alpha1.AgentInstanceOperation_AGENT_INSTANCE_OPERATION_UNSPECIFIED {
+		s.failFinishOnce = false
+		return s.instance, errors.New("injected database failure")
 	}
 	s.instance = proto.Clone(instance).(*apiv1alpha1.AgentInstance)
 	return s.instance, nil
 }
 
-func (s *lifecycleTestStore) DeleteAgentInstance(context.Context, string) error {
+func (s *workflowTestStore) DeleteAgentInstance(context.Context, string) error {
 	s.instance = nil
 	return nil
 }
 
-type lifecycleTestActors struct {
-	actors map[string]*ateapipb.Actor
+type workflowTestRuntime struct {
+	endpoint   runtimebackend.Endpoint
+	snapshot   *dbpkg.AgentInstanceTaskSnapshot
+	checkpoint *dbpkg.AgentInstanceCheckpoint
+	calls      []string
 }
 
-func actorKey(atespace, name string) string { return atespace + "/" + name }
+var _ runtimebackend.Lifecycle = (*workflowTestRuntime)(nil)
 
-func (*lifecycleTestActors) EnsureAtespace(context.Context, string) error { return nil }
-
-func (a *lifecycleTestActors) GetActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
-	actor := a.actors[actorKey(atespace, name)]
-	if actor == nil {
-		return nil, status.Error(codes.NotFound, "missing")
-	}
-	return actor, nil
+func (r *workflowTestRuntime) Create(context.Context, *apiv1alpha1.AgentInstance) (runtimebackend.Endpoint, error) {
+	r.calls = append(r.calls, "create")
+	return r.endpoint, nil
 }
 
-func (a *lifecycleTestActors) CreateActor(_ context.Context, atespace, name, templateNamespace, templateName string) (*ateapipb.Actor, error) {
-	actor := &ateapipb.Actor{
-		Metadata:               &ateapipb.ResourceMetadata{Atespace: atespace, Name: name, Uid: "actor-uid"},
-		ActorTemplateNamespace: templateNamespace, ActorTemplateName: templateName,
-		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
-	}
-	a.actors[actorKey(atespace, name)] = actor
-	return actor, nil
+func (r *workflowTestRuntime) Fork(_ context.Context, _ *apiv1alpha1.AgentInstance, checkpoint *dbpkg.AgentInstanceCheckpoint) (runtimebackend.Endpoint, error) {
+	r.calls = append(r.calls, "fork")
+	r.checkpoint = checkpoint
+	return r.endpoint, nil
 }
 
-func (a *lifecycleTestActors) CreateActorFromSnapshotTag(_ context.Context, atespace, name, templateNamespace, templateName, tagAtespace, tagName string) (*ateapipb.Actor, error) {
-	actor := &ateapipb.Actor{
-		Metadata:               &ateapipb.ResourceMetadata{Atespace: atespace, Name: name, Uid: "actor-uid"},
-		ActorTemplateNamespace: templateNamespace, ActorTemplateName: templateName,
-		SourceSnapshotTag: &ateapipb.ObjectRef{Atespace: tagAtespace, Name: tagName},
-		Status: &ateapipb.ActorStatus{
-			State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED,
-			SourceSnapshot: &ateapipb.ActorSourceSnapshotStatus{
-				Snapshot: &ateapipb.ObjectRef{Atespace: tagAtespace, Name: "snapshot-1"}, SnapshotUid: "snapshot-uid",
-			},
-		},
-	}
-	a.actors[actorKey(atespace, name)] = actor
-	return actor, nil
+func (r *workflowTestRuntime) Quiesce(context.Context, *apiv1alpha1.AgentInstance) (*dbpkg.AgentInstanceTaskSnapshot, error) {
+	r.calls = append(r.calls, "quiesce")
+	return r.snapshot, nil
 }
 
-func (a *lifecycleTestActors) ResumeActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
-	actor := a.actors[actorKey(atespace, name)]
-	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
-	return actor, nil
+func (r *workflowTestRuntime) Suspend(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "suspend")
+	return nil
 }
 
-func (a *lifecycleTestActors) SuspendActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
-	actor := a.actors[actorKey(atespace, name)]
-	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_SUSPENDED
-	actor.Status.LatestSnapshot = &ateapipb.ObjectRef{Atespace: atespace, Name: "snapshot-1"}
-	return actor, nil
+func (r *workflowTestRuntime) Resume(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "resume")
+	return nil
 }
 
-func (a *lifecycleTestActors) GetActorSnapshot(_ context.Context, atespace, name string) (*ateapipb.ActorSnapshot, error) {
-	return &ateapipb.ActorSnapshot{
-		Metadata: &ateapipb.ResourceMetadata{Atespace: atespace, Name: name, Uid: "snapshot-uid"},
-		Status:   &ateapipb.ActorSnapshotStatus{ContentScope: ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA},
-	}, nil
-}
-
-func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string) error {
-	delete(a.actors, actorKey(atespace, name))
+func (r *workflowTestRuntime) Delete(context.Context, *apiv1alpha1.AgentInstance) error {
+	r.calls = append(r.calls, "delete")
 	return nil
 }
