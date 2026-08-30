@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func TestMigration000019RuntimeRevisionPlacementDefaultConstraintAndRollback(t *testing.T) {
+func TestMigration000020RuntimeRevisionPlacementDefaultConstraintAndRollback(t *testing.T) {
 	connStr := startTestDB(t)
-	migrateCoreTo(t, connStr, 18)
+	migrateCoreTo(t, connStr, 19)
 
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
@@ -35,7 +35,7 @@ func TestMigration000019RuntimeRevisionPlacementDefaultConstraintAndRollback(t *
 		t.Fatal(err)
 	}
 
-	migrateCoreTo(t, connStr, 19)
+	migrateCoreTo(t, connStr, 20)
 	assertPlacement := func(revision, want string) {
 		t.Helper()
 		var got string
@@ -48,7 +48,7 @@ func TestMigration000019RuntimeRevisionPlacementDefaultConstraintAndRollback(t *
 	}
 	assertPlacement("revision-before-placement", "KubernetesPod")
 
-	// A previous controller omits placement while the schema is already at 19.
+	// A previous controller omits placement while the schema is already at 20.
 	if err := insertRevision("revision-old-writer", "actor-old-writer"); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestMigration000019RuntimeRevisionPlacementDefaultConstraintAndRollback(t *
 		t.Fatal("invalid placement passed the database constraint")
 	}
 
-	migrateCoreTo(t, connStr, 18)
+	migrateCoreTo(t, connStr, 19)
 	var columnExists bool
 	if err := db.QueryRowContext(ctx, `
 		SELECT EXISTS (
@@ -98,6 +98,6 @@ func TestMigration000019RuntimeRevisionPlacementDefaultConstraintAndRollback(t *
 		t.Fatal("down migration left runtime_revision.placement")
 	}
 
-	migrateCoreTo(t, connStr, 19)
+	migrateCoreTo(t, connStr, 20)
 	assertPlacement("revision-external", "KubernetesPod")
 }

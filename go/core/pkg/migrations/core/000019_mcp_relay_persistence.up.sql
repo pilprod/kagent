@@ -24,7 +24,7 @@ $$;
 -- intentionally no plaintext token or connection-material column.
 CREATE TABLE IF NOT EXISTS mcp_relay_grant (
     capability_hash BYTEA PRIMARY KEY,
-    agent_instance_id TEXT NOT NULL REFERENCES agent_instance(id) ON DELETE CASCADE,
+    agent_instance_id UUID NOT NULL REFERENCES agent_instance(id) ON DELETE CASCADE,
     revision TEXT NOT NULL REFERENCES runtime_revision(revision) ON DELETE CASCADE,
     binding_id TEXT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,

@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestMigration000018MCPRelayPersistenceBackfillAndRollback(t *testing.T) {
+func TestMigration000019MCPRelayPersistenceBackfillAndRollback(t *testing.T) {
 	connStr := startTestDB(t)
-	migrateCoreTo(t, connStr, 17)
+	migrateCoreTo(t, connStr, 18)
 
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
@@ -37,11 +37,11 @@ func TestMigration000018MCPRelayPersistenceBackfillAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	migrateCoreTo(t, connStr, 18)
+	migrateCoreTo(t, connStr, 19)
 	for _, revision := range []string{"revision-before-relay", "revision-old-writer"} {
 		if revision == "revision-old-writer" {
 			// This intentionally omits mcp_policy exactly as the previous binary
-			// does while the schema is already at version 18.
+			// does while the schema is already at version 19.
 			if err := exec(`
 				INSERT INTO runtime_revision (
 					revision, namespace, agent_template_name, agent_template_uid,
@@ -69,56 +69,58 @@ func TestMigration000018MCPRelayPersistenceBackfillAndRollback(t *testing.T) {
 		}
 	}
 
-	if err := exec(`INSERT INTO a2a_context (id, namespace, user_id) VALUES ('instance-1', 'team-a', 'alice')`); err != nil {
+	instanceID := "018f47a2-4efb-7c21-a848-123456789abc"
+	requestID := "018f47a2-4efb-7c21-a848-123456789abd"
+	if err := exec(`INSERT INTO a2a_context (id, namespace, user_id) VALUES ($1, 'team-a', 'alice')`, instanceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := exec(`
 		INSERT INTO agent_instance (
 			id, namespace, user_id, request_id, context_id, prepared_revision, state, operation, labels, data
 		) VALUES (
-			'instance-1', 'team-a', 'alice', 'request-1', 'instance-1',
+			$1, 'team-a', 'alice', $2, $1,
 			'revision-before-relay', 'READY', 'NONE', '{}', '\x00'
 		)
-	`); err != nil {
+	`, instanceID, requestID); err != nil {
 		t.Fatal(err)
 	}
 	bindingID := "mcp-" + strings.Repeat("a", 64)
 	validGrant := `
 		INSERT INTO mcp_relay_grant (
 			capability_hash, agent_instance_id, revision, binding_id, expires_at
-		) VALUES ($1, 'instance-1', 'revision-before-relay', $2, '2027-01-01 00:00:00+00')
+		) VALUES ($1, $2, 'revision-before-relay', $3, '2027-01-01 00:00:00+00')
 	`
-	if err := exec(validGrant, make([]byte, 31), bindingID); err == nil {
+	if err := exec(validGrant, make([]byte, 31), instanceID, bindingID); err == nil {
 		t.Fatal("31-byte capability hash passed the migration constraint")
 	}
-	if err := exec(validGrant, make([]byte, 32), bindingID); err == nil {
+	if err := exec(validGrant, make([]byte, 32), instanceID, bindingID); err == nil {
 		t.Fatal("zero capability hash passed the migration constraint")
 	}
-	if err := exec(validGrant, append([]byte{1}, make([]byte, 31)...), "not-a-binding"); err == nil {
+	if err := exec(validGrant, append([]byte{1}, make([]byte, 31)...), instanceID, "not-a-binding"); err == nil {
 		t.Fatal("non-canonical binding ID passed the migration constraint")
 	}
 	if err := exec(`
 		INSERT INTO mcp_relay_grant (
 			capability_hash, agent_instance_id, revision, binding_id, expires_at
-		) VALUES ($1, 'instance-1', 'revision-before-relay', $2, '1970-01-01 00:00:00+00')
-	`, append([]byte{1}, make([]byte, 31)...), bindingID); err == nil {
+		) VALUES ($1, $2, 'revision-before-relay', $3, '1970-01-01 00:00:00+00')
+	`, append([]byte{1}, make([]byte, 31)...), instanceID, bindingID); err == nil {
 		t.Fatal("zero/epoch expiry passed the migration constraint")
 	}
 	if err := exec(`
 		INSERT INTO mcp_relay_grant (
 			capability_hash, agent_instance_id, revision, binding_id, expires_at
-		) VALUES ($1, 'instance-1', 'revision-before-relay', $2, 'infinity')
-	`, append([]byte{2}, make([]byte, 31)...), bindingID); err == nil {
+		) VALUES ($1, $2, 'revision-before-relay', $3, 'infinity')
+	`, append([]byte{2}, make([]byte, 31)...), instanceID, bindingID); err == nil {
 		t.Fatal("infinite expiry passed the migration constraint")
 	}
 	validHash := make([]byte, 32)
 	validHash[0] = 1
-	if err := exec(validGrant, validHash, bindingID); err != nil {
+	if err := exec(validGrant, validHash, instanceID, bindingID); err != nil {
 		t.Fatalf("valid grant failed migration constraints: %v", err)
 	}
 
 	// Down must remove dependent grants before removing the revision policy.
-	migrateCoreTo(t, connStr, 17)
+	migrateCoreTo(t, connStr, 18)
 	var grantTableExists, policyColumnExists bool
 	if err := db.QueryRowContext(ctx, `SELECT to_regclass('mcp_relay_grant') IS NOT NULL`).Scan(&grantTableExists); err != nil {
 		t.Fatal(err)
@@ -137,7 +139,7 @@ func TestMigration000018MCPRelayPersistenceBackfillAndRollback(t *testing.T) {
 	}
 
 	// A second upgrade safely re-backfills surviving old revisions.
-	migrateCoreTo(t, connStr, 18)
+	migrateCoreTo(t, connStr, 19)
 	var policy string
 	if err := db.QueryRowContext(ctx, `SELECT mcp_policy::text FROM runtime_revision WHERE revision = 'revision-before-relay'`).Scan(&policy); err != nil {
 		t.Fatal(err)
