@@ -33,11 +33,11 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-schema_version="$(jq -er '.schemaVersion | select(. == 2)' "${evidence}")" || {
-  printf 'release evidence must use schemaVersion 2\n' >&2
+schema_version="$(jq -er '.schemaVersion | select(. == 3)' "${evidence}")" || {
+  printf 'release evidence must use schemaVersion 3\n' >&2
   exit 1
 }
-[[ "${schema_version}" == "2" ]]
+[[ "${schema_version}" == "3" ]]
 
 image="$(jq -er --arg key "${evidence_key}" '.runtime_images[$key] | strings | select(length > 0)' "${evidence}")" || {
   printf 'release evidence does not contain runtime_images.%s\n' "${evidence_key}" >&2

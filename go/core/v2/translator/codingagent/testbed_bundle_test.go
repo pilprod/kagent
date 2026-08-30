@@ -133,7 +133,7 @@ func TestExternalSlotTestbedEvidenceSeparatesDeploymentAndRuntimeImages(t *testi
 		} `json:"charts"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &evidence))
-	require.Equal(t, 2, evidence.SchemaVersion)
+	require.Equal(t, 3, evidence.SchemaVersion)
 	require.Equal(t, "https://github.com/pilprod/kagent", evidence.SourceRepository)
 	require.Regexp(t, `^[0-9a-f]{40}$`, evidence.SourceCommit)
 	require.Equal(t, "helm/kagent", evidence.ChartSource.Path)
@@ -165,18 +165,18 @@ func TestExternalSlotTestbedRendererRejectsUnpinnedOrMissingImages(t *testing.T)
 	}{
 		{
 			name:     "mutable tag",
-			evidence: `{"schemaVersion":2,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness:latest"}}`,
+			evidence: `{"schemaVersion":3,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness:latest"}}`,
 			want:     "is not digest-qualified",
 		},
 		{
 			name:     "missing image",
-			evidence: `{"schemaVersion":2,"runtime_images":{}}`,
+			evidence: `{"schemaVersion":3,"runtime_images":{}}`,
 			want:     "does not contain runtime_images.codexHarness",
 		},
 		{
-			name:     "unknown schema",
-			evidence: `{"schemaVersion":1,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
-			want:     "must use schemaVersion 2",
+			name:     "legacy schema",
+			evidence: `{"schemaVersion":2,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
+			want:     "must use schemaVersion 3",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

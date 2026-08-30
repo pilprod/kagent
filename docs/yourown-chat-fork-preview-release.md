@@ -65,8 +65,8 @@ The resulting prerelease contains:
 - reproducible code-only `kagent-codex-*` and `kagent-claude-*` native archives;
 - `SHA256SUMS`, provenance attestations, and `release-evidence.json`.
 
-The declarative runtime is published as `golang-adk` and recorded under
-`runtime_images.kagentHarness`. Its only v2 consumer is the immutable
+The schema v3 release evidence records the declarative `golang-adk` runtime under
+`runtime_images.kagentHarness`. Its only v2 API consumer is the immutable
 `Harness.spec.workload.image` field; the controller propagates that exact
 digest-qualified reference into the compiled `Revision` and then the Substrate
 `ActorTemplate`. `controller.agentImage` and its `IMAGE_*` environment values
@@ -199,7 +199,7 @@ gcloud storage cp \
 jq -e \
   --arg commit "${KAGENT_PREVIEW_COMMIT}" \
   --arg version "${KAGENT_PREVIEW_VERSION}" '
-    .schemaVersion == 2 and
+    .schemaVersion == 3 and
     .source_repository == "https://github.com/pilprod/kagent" and
     .source_commit == $commit and
     .tag == ("v" + $version) and

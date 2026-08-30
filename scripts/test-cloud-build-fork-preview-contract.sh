@@ -244,7 +244,7 @@ import pathlib
 import sys
 
 evidence = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if evidence["schemaVersion"] != 2:
+if evidence["schemaVersion"] != 3:
     raise SystemExit("wrong evidence schema")
 if evidence["source_commit"] != sys.argv[2]:
     raise SystemExit("wrong source commit")

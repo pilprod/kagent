@@ -86,7 +86,7 @@ def main() -> int:
     crds = digest_file(args.evidence_directory, "chart", "kagent-crds")
 
     evidence = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "channel": "preview",
         "tag": f"v{args.version}",
         "source_repository": "https://github.com/pilprod/kagent",

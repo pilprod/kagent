@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "channel": "preview",
   "tag": "v0.0.0-test.kap.1",
   "source_repository": "https://github.com/pilprod/kagent",

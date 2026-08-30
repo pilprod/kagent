@@ -515,7 +515,7 @@ jobs:
             [[ "${actual}" == "${expected}" ]]
           done
           jq -n \
-            --arg schemaVersion "2" \
+            --arg schemaVersion "3" \
             --arg tag "${GITHUB_REF_NAME}" \
             --arg source_repository "https://github.com/${GITHUB_REPOSITORY}" \
             --arg source_commit "${GITHUB_SHA}" \
@@ -559,7 +559,7 @@ jobs:
               }
             }' > release-evidence.json
           jq -e --arg version "${version}" '
-            .schemaVersion == 2 and
+            .schemaVersion == 3 and
             .source_repository == "https://github.com/pilprod/kagent" and
             (.source_commit | test("^[0-9a-f]{40}$")) and
             .chart_source.path == "helm/kagent" and
