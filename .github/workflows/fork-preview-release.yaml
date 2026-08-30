@@ -100,6 +100,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the current chart runtime image contract
+        run: ./scripts/test-fork-preview-release-contract.sh
+
       - name: Run release-critical Go checks
         working-directory: go
         run: |
@@ -131,6 +134,7 @@ jobs:
         component:
           - controller
           - ui
+          - golang-adk
           - codex-harness
           # claude-harness is intentionally absent until the Anthropic
           # Commercial Terms gate is explicitly satisfied.
@@ -482,13 +486,17 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           controller="$(cut -d= -f2 release-inputs/image-controller.txt)"
           ui="$(cut -d= -f2 release-inputs/image-ui.txt)"
+          agent="$(cut -d= -f2 release-inputs/image-golang-adk.txt)"
           codex="$(cut -d= -f2 release-inputs/image-codex-harness.txt)"
           chart="$(cut -d= -f2 release-inputs/chart-kagent.txt)"
           crds="$(cut -d= -f2 release-inputs/chart-kagent-crds.txt)"
+          chart_source_tree="$(git rev-parse "${GITHUB_SHA}:helm/kagent")"
+          [[ "${chart_source_tree}" =~ ^[0-9a-f]{40}$ ]]
           (cd release-inputs && sha256sum --check SHA256SUMS)
           for pair in \
             "controller:${controller}" \
             "ui:${ui}" \
+            "golang-adk:${agent}" \
             "codex-harness:${codex}"; do
             component="${pair%%:*}"
             expected="${pair#*:}"
@@ -506,9 +514,13 @@ jobs:
           jq -n \
             --arg schemaVersion "1" \
             --arg tag "${GITHUB_REF_NAME}" \
+            --arg sourceRepository "https://github.com/${GITHUB_REPOSITORY}" \
             --arg sourceCommit "${GITHUB_SHA}" \
+            --arg chartSourceTree "${chart_source_tree}" \
+            --arg skillsInitRemovalCommit "059c01b68584dea113ccdf80f2e356c2d051e02a" \
             --arg controller "ghcr.io/${owner}/kagent/controller@${controller}" \
             --arg ui "ghcr.io/${owner}/kagent/ui@${ui}" \
+            --arg agent "ghcr.io/${owner}/kagent/golang-adk@${agent}" \
             --arg codexHarness "ghcr.io/${owner}/kagent/codex-harness@${codex}" \
             --arg kagentChart "ghcr.io/${owner}/kagent/helm/kagent@${chart}" \
             --arg crdsChart "ghcr.io/${owner}/kagent/helm/kagent-crds@${crds}" \
@@ -516,10 +528,17 @@ jobs:
               schemaVersion: ($schemaVersion | tonumber),
               channel: "preview",
               tag: $tag,
+              sourceRepository: $sourceRepository,
               sourceCommit: $sourceCommit,
+              chartSource: {
+                path: "helm/kagent",
+                tree: $chartSourceTree,
+                skillsInitRemovalCommit: $skillsInitRemovalCommit
+              },
               images: {
                 controller: $controller,
                 ui: $ui,
+                agent: $agent,
                 codexHarness: $codexHarness
               },
               charts: {
@@ -527,7 +546,14 @@ jobs:
                 kagentCRDs: $crdsChart
               }
             }' > release-evidence.json
-          jq -e '.images | has("claudeHarness") | not' release-evidence.json >/dev/null
+          jq -e '
+            .sourceRepository == "https://github.com/pilprod/kagent" and
+            .chartSource.path == "helm/kagent" and
+            (.chartSource.tree | test("^[0-9a-f]{40}$")) and
+            .chartSource.skillsInitRemovalCommit == "059c01b68584dea113ccdf80f2e356c2d051e02a" and
+            (.images | keys == ["agent", "codexHarness", "controller", "ui"]) and
+            (.images | has("claudeHarness") | not)
+          ' release-evidence.json >/dev/null
           sha256sum release-evidence.json > release-evidence.json.sha256
 
       - name: Publish the immutable prerelease

@@ -4,10 +4,11 @@ This runbook publishes the ExternalSlot testbed in a fixed order. It does not
 authorize a Git push, GitHub setting change, package publication, or GKE apply.
 Each of those remains a separately reviewed operation.
 
-The preview contains the kagent controller and UI, the Codex harness image,
-the kagent charts, and code-only native Codex and Claude adapters. It does not
-publish an image with Claude Code preinstalled. Such an image remains disabled
-until the Anthropic Commercial Terms gate is explicitly satisfied.
+The preview contains the kagent controller and UI, the declarative Go agent
+runtime, the Codex harness image, the kagent charts, and code-only native Codex
+and Claude adapters. It does not publish an image with Claude Code preinstalled.
+Such an image remains disabled until the Anthropic Commercial Terms gate is
+explicitly satisfied.
 
 ## Preconditions
 
@@ -58,12 +59,20 @@ tests, and the GitHub immutable-release setting.
 
 The resulting prerelease contains:
 
-- digest-qualified controller, UI, and Codex harness image evidence;
+- digest-qualified controller, UI, declarative Go agent runtime, and Codex
+  harness image evidence;
 - digest-qualified dependency-free kagent and CRD charts;
 - reproducible code-only `kagent-codex-*` and `kagent-claude-*` native archives;
 - `SHA256SUMS`, provenance attestations, and `release-evidence.json`.
 
-`release-evidence.json` intentionally has no `claudeHarness` image entry.
+The declarative runtime is published as `golang-adk` and recorded under the
+consumer-facing `images.agent` key used for `controller.agentImage`. The
+evidence also records the exact repository, source commit, and `helm/kagent`
+Git tree. Its chart-source contract proves that upstream commit
+`059c01b68584dea113ccdf80f2e356c2d051e02a` removed the obsolete
+`controller.skillsInitImage` value and `skills-init` container; neither is
+reintroduced by this fork. `release-evidence.json` intentionally has no
+`claudeHarness` image entry.
 
 ## 3. Publish the Local Agent Host
 
