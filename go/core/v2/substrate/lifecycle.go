@@ -8,7 +8,6 @@ import (
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
-	legacysubstrate "github.com/kagent-dev/kagent/go/core/pkg/sandboxbackend/substrate"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -78,7 +77,7 @@ func (l *Lifecycle) Fork(ctx context.Context, instance *apiv1alpha1.AgentInstanc
 	if err := l.actors.EnsureAtespace(ctx, atespace); err != nil {
 		return runtimebackend.Endpoint{}, fmt.Errorf("ensure Atespace %s: %w", atespace, err)
 	}
-	tag := &ateapipb.ObjectRef{Atespace: checkpoint.SnapshotAtespace, Name: "checkpoint-" + checkpoint.ID}
+	tag := &ateapipb.ObjectRef{Atespace: checkpoint.SnapshotAtespace, Name: "checkpoint-" + checkpoint.ID.String()}
 	actor, err := l.actors.GetActor(ctx, atespace, name)
 	if status.Code(err) == codes.NotFound {
 		actor, err = l.actors.CreateActorFromSnapshotTag(ctx, atespace, name,
@@ -235,7 +234,7 @@ func (l *Lifecycle) revision(ctx context.Context, instance *apiv1alpha1.AgentIns
 }
 
 func endpoint(atespace, name string) runtimebackend.Endpoint {
-	return runtimebackend.Endpoint{A2AAuthority: legacysubstrate.ActorHost(atespace, name, "")}
+	return runtimebackend.Endpoint{A2AAuthority: ActorHost(atespace, name, "")}
 }
 
 func validateActorTemplate(actor *ateapipb.Actor, revision *dbpkg.RuntimeRevision, atespace, name string) error {

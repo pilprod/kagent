@@ -49,6 +49,8 @@ Every component has a single responsibility. If code reaches into another compon
 
 **Operations are atomic from the caller's perspective.** Database-only operations use transactions. Workflows that cross database and network boundaries use durable phases, idempotent retries, and compensating cleanup so partial work can be safely resumed or removed. Never hold a database transaction or lock across a network call.
 
+**Persist transitions atomically.** When one logical transition changes task state and history, compute it before persistence and commit it through one store transaction. Transport code must not perform preparatory writes. Reject malformed durable data rather than silently omitting it.
+
 **Internal mechanics are not API.** Locks, accounting counters, query sequencing, and cloned dependencies stay hidden from callers. An implementation change should not force callers to change.
 
 **Behavior lives where the knowledge is.** Do not move behavior sideways into a wrapper; push it down to the component that understands the domain.
@@ -164,14 +166,18 @@ is signed in correctly reports nobody — there is no backend to have signed in 
 
 ### Extension points
 
-One `VendorExtensionConfig` contributes navigation entries and overrides, routes and
+An `AppExtensionConfig` contributes navigation entries and overrides, routes and
 route handles, slots, form fields, table columns, API overrides, providers, theme
 tokens, shell regions, branding, provider icons and agent links. Components read
 every colour, radius and font from those tokens, so overriding them restyles
 components an extension never touches. When adding a feature, check whether it
 belongs behind an extension point rather than as a branch inside a shared component.
 
-The full guide is [ui/docs/vendor-extensions.md](ui/docs/vendor-extensions.md).
+Several are installed at once, as the ordered `activeAppExtensions` array. Additive
+contributions from every entry take effect in order; singular ones are merged with
+the later entry winning.
+
+The full guide is [ui/docs/app-extensions.md](ui/docs/app-extensions.md).
 
 ### Conventions specific to this codebase
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/google/uuid"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"google.golang.org/grpc/codes"
@@ -64,7 +65,7 @@ func TestLifecycleForkPreservesCheckpointIdentity(t *testing.T) {
 	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
 	lifecycle := NewLifecycle(lifecycleTestRevisions(), actors)
 	checkpoint := &dbpkg.AgentInstanceCheckpoint{
-		ID: "checkpoint-1", SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
+		ID: uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc"), SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
 	}
 
 	endpoint, err := lifecycle.Fork(t.Context(), instance, checkpoint)
@@ -73,7 +74,7 @@ func TestLifecycleForkPreservesCheckpointIdentity(t *testing.T) {
 	}
 	actor := actors.actors[actorKey("team-a", actorName(instance.GetId()))]
 	if endpoint.A2AAuthority == "" || actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDED ||
-		actor.GetSourceSnapshotTag().GetName() != "checkpoint-checkpoint-1" {
+		actor.GetSourceSnapshotTag().GetName() != "checkpoint-018f47a2-4efb-7c21-a848-123456789abc" {
 		t.Fatalf("Fork() endpoint = %+v, Actor = %+v", endpoint, actor)
 	}
 	actor.SourceSnapshotTag.Name = "wrong-tag"

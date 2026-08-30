@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/google/uuid"
 	dbpkg "github.com/kagent-dev/kagent/go/api/database"
 	apiv1alpha1 "github.com/kagent-dev/kagent/go/api/gen/kagent/api/v1alpha1"
 	"github.com/kagent-dev/kagent/go/core/v2/runtimebackend"
@@ -77,7 +78,7 @@ func TestRuntimeWorkflowForkPublishesBackendAuthority(t *testing.T) {
 	}
 	store := &workflowTestStore{instance: instance}
 	checkpoint := &dbpkg.AgentInstanceCheckpoint{
-		ID: "checkpoint-1", SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
+		ID: uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc"), SnapshotAtespace: "team-a", SnapshotName: "snapshot-1", SnapshotUID: "snapshot-uid",
 	}
 	runtime := &workflowTestRuntime{endpoint: runtimebackend.Endpoint{A2AAuthority: "fork.internal"}}
 
