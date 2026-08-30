@@ -26,7 +26,7 @@ type actorClient interface {
 	ResumeActor(context.Context, string, string) (*ateapipb.Actor, error)
 	SuspendActor(context.Context, string, string) (*ateapipb.Actor, error)
 	GetActorSnapshot(context.Context, string, string) (*ateapipb.ActorSnapshot, error)
-	DeleteActor(context.Context, string, string) error
+	DeleteActor(context.Context, string, string, bool) error
 }
 
 // Lifecycle implements the private AgentInstance runtime contract with one
@@ -42,8 +42,10 @@ func NewLifecycle(revisions revisionStore, actors actorClient) *Lifecycle {
 	return &Lifecycle{revisions: revisions, actors: actors}
 }
 
-// Create converges the deterministic Actor into existence. Substrate creates
-// it suspended, and publishing its routing authority does not change that state.
+// Create converges the deterministic Actor into existence. KubernetesPod
+// Actors remain suspended until their ordinary lifecycle resumes them, while
+// ExternalSlot Actors must be running before their route is published because
+// ResumeActor is what claims an external provider assignment.
 func (l *Lifecycle) Create(ctx context.Context, instance *apiv1alpha1.AgentInstance) (runtimebackend.Endpoint, error) {
 	revision, err := l.revision(ctx, instance)
 	if err != nil {
@@ -63,6 +65,22 @@ func (l *Lifecycle) Create(ctx context.Context, instance *apiv1alpha1.AgentInsta
 	if err := validateActorTemplate(actor, revision, atespace, name); err != nil {
 		return runtimebackend.Endpoint{}, err
 	}
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return runtimebackend.Endpoint{}, fmt.Errorf("load prepared revision: %w", err)
+	}
+	if placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+		// Always issue the idempotent resume, including after a retry discovers a
+		// running Actor. This closes the crash window between provider assignment
+		// and publishing READY in the AgentInstance row.
+		actor, err = l.actors.ResumeActor(ctx, atespace, name)
+		if err != nil {
+			return runtimebackend.Endpoint{}, fmt.Errorf("resume ExternalSlot Actor %s/%s: %w", atespace, name, err)
+		}
+		if actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+			return runtimebackend.Endpoint{}, fmt.Errorf("resume ExternalSlot Actor %s/%s returned status %s", atespace, name, actor.GetStatus().GetState())
+		}
+	}
 	return endpoint(atespace, name), nil
 }
 
@@ -71,6 +89,9 @@ func (l *Lifecycle) Create(ctx context.Context, instance *apiv1alpha1.AgentInsta
 func (l *Lifecycle) Fork(ctx context.Context, instance *apiv1alpha1.AgentInstance, checkpoint *dbpkg.AgentInstanceCheckpoint) (runtimebackend.Endpoint, error) {
 	revision, err := l.revision(ctx, instance)
 	if err != nil {
+		return runtimebackend.Endpoint{}, err
+	}
+	if err := requireSnapshotLifecycle(revision, "fork"); err != nil {
 		return runtimebackend.Endpoint{}, err
 	}
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
@@ -106,6 +127,13 @@ func (l *Lifecycle) Fork(ctx context.Context, instance *apiv1alpha1.AgentInstanc
 // Quiesce durably suspends the Actor and resolves the exact immutable snapshot
 // produced by that suspend operation.
 func (l *Lifecycle) Quiesce(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*dbpkg.AgentInstanceTaskSnapshot, error) {
+	revision, err := l.revision(ctx, instance)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotLifecycle(revision, "quiesce"); err != nil {
+		return nil, err
+	}
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
 	actor, err := l.actors.SuspendActor(ctx, atespace, name)
 	if err != nil {
@@ -138,7 +166,14 @@ func (l *Lifecycle) Quiesce(ctx context.Context, instance *apiv1alpha1.AgentInst
 
 // Suspend is lookup-only and never recreates a missing Actor.
 func (l *Lifecycle) Suspend(ctx context.Context, instance *apiv1alpha1.AgentInstance) error {
-	actor, err := l.lifecycleActor(ctx, instance)
+	revision, err := l.revision(ctx, instance)
+	if err != nil {
+		return err
+	}
+	if err := requireSnapshotLifecycle(revision, "suspend"); err != nil {
+		return err
+	}
+	actor, err := l.lifecycleActor(ctx, instance, revision)
 	if err != nil {
 		return err
 	}
@@ -156,7 +191,14 @@ func (l *Lifecycle) Suspend(ctx context.Context, instance *apiv1alpha1.AgentInst
 
 // Resume is lookup-only and never recreates a missing Actor.
 func (l *Lifecycle) Resume(ctx context.Context, instance *apiv1alpha1.AgentInstance) error {
-	actor, err := l.lifecycleActor(ctx, instance)
+	revision, err := l.revision(ctx, instance)
+	if err != nil {
+		return err
+	}
+	if err := requireSnapshotLifecycle(revision, "resume"); err != nil {
+		return err
+	}
+	actor, err := l.lifecycleActor(ctx, instance, revision)
 	if err != nil {
 		return err
 	}
@@ -196,24 +238,26 @@ func (l *Lifecycle) Delete(ctx context.Context, instance *apiv1alpha1.AgentInsta
 	if err := validateActorTemplate(actor, revision, atespace, name); err != nil {
 		return fmt.Errorf("refuse to delete Actor %s/%s: ActorTemplate changed", atespace, name)
 	}
-	switch actor.GetStatus().GetState() {
-	case ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ateapipb.ActorState_ACTOR_STATE_CRASHED, ateapipb.ActorState_ACTOR_STATE_DELETING:
-	default:
-		if _, err := l.actors.SuspendActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
-			return fmt.Errorf("suspend Actor %s/%s before deletion: %w", atespace, name, err)
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return fmt.Errorf("load prepared revision: %w", err)
+	}
+	if placement == dbpkg.RuntimeRevisionPlacementKubernetesPod {
+		switch actor.GetStatus().GetState() {
+		case ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ateapipb.ActorState_ACTOR_STATE_CRASHED, ateapipb.ActorState_ACTOR_STATE_DELETING:
+		default:
+			if _, err := l.actors.SuspendActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
+				return fmt.Errorf("suspend Actor %s/%s before deletion: %w", atespace, name, err)
+			}
 		}
 	}
-	if err := l.actors.DeleteActor(ctx, atespace, name); err != nil && status.Code(err) != codes.NotFound {
+	if err := l.actors.DeleteActor(ctx, atespace, name, placement == dbpkg.RuntimeRevisionPlacementExternalSlot); err != nil && status.Code(err) != codes.NotFound {
 		return fmt.Errorf("delete Actor %s/%s: %w", atespace, name, err)
 	}
 	return nil
 }
 
-func (l *Lifecycle) lifecycleActor(ctx context.Context, instance *apiv1alpha1.AgentInstance) (*ateapipb.Actor, error) {
-	revision, err := l.revision(ctx, instance)
-	if err != nil {
-		return nil, err
-	}
+func (l *Lifecycle) lifecycleActor(ctx context.Context, instance *apiv1alpha1.AgentInstance, revision *dbpkg.RuntimeRevision) (*ateapipb.Actor, error) {
 	atespace, name := instance.GetNamespace(), actorName(instance.GetId())
 	actor, err := l.actors.GetActor(ctx, atespace, name)
 	if err != nil {
@@ -230,7 +274,21 @@ func (l *Lifecycle) revision(ctx context.Context, instance *apiv1alpha1.AgentIns
 	if err != nil {
 		return nil, fmt.Errorf("load prepared revision: %w", err)
 	}
+	if revision == nil {
+		return nil, fmt.Errorf("load prepared revision: empty result")
+	}
 	return revision, nil
+}
+
+func requireSnapshotLifecycle(revision *dbpkg.RuntimeRevision, operation string) error {
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s runtime revision: %v", operation, err)
+	}
+	if placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+		return status.Errorf(codes.FailedPrecondition, "%s is not supported for ExternalSlot runtime revisions", operation)
+	}
+	return nil
 }
 
 func endpoint(atespace, name string) runtimebackend.Endpoint {

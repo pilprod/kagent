@@ -143,6 +143,7 @@ type TokenExchangeConfig struct {
 // OpenAIConfig contains OpenAI-specific configuration options
 //
 // +kubebuilder:validation:XValidation:message="maxTokens and maxCompletionTokens are mutually exclusive",rule="!(has(self.maxTokens) && has(self.maxCompletionTokens))"
+// +kubebuilder:validation:XValidation:message="serviceTier is only supported with apiFormat responses",rule="!has(self.serviceTier) || (has(self.apiFormat) && self.apiFormat == 'responses')"
 type OpenAIConfig struct {
 	// Base URL for the OpenAI API (overrides default)
 	// +optional
@@ -209,6 +210,11 @@ type OpenAIConfig struct {
 	// +kubebuilder:default=chatCompletions
 	APIFormat *OpenAIAPIFormat `json:"apiFormat,omitempty"`
 
+	// ServiceTier selects expedited processing for Responses API requests.
+	// Omit this field for normal/default processing.
+	// +optional
+	ServiceTier *OpenAIServiceTier `json:"serviceTier,omitempty"`
+
 	// TokenExchange configures dynamic bearer token acquisition via credential exchange.
 	// Requires apiKeySecret (used as the service account secret) and is mutually exclusive with apiKeyPassthrough.
 	// +optional
@@ -224,10 +230,18 @@ const (
 	OpenAIAPIFormatResponses       OpenAIAPIFormat = "responses"
 )
 
+// OpenAIServiceTier selects the OpenAI Responses API service tier.
+// +kubebuilder:validation:Enum=fast
+type OpenAIServiceTier string
+
+const (
+	OpenAIServiceTierFast OpenAIServiceTier = "fast"
+)
+
 // OpenAIReasoningEffort represents how many reasoning tokens the model generates before producing a response.
 // Supported values vary by model. Set to "none" to disable reasoning; some models (e.g. gpt-5.6-terra)
 // require this to use function tools via the Chat Completions API.
-// +kubebuilder:validation:Enum=none;minimal;low;medium;high;xhigh
+// +kubebuilder:validation:Enum=none;minimal;low;medium;high;xhigh;max;ultra
 type OpenAIReasoningEffort string
 
 // AzureOpenAIConfig contains Azure OpenAI-specific configuration options

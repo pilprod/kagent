@@ -310,6 +310,8 @@ export const mockProviders: Provider[] = [
       "n",
       "timeout",
       "reasoningEffort",
+      "apiFormat",
+      "serviceTier",
     ],
   },
   {

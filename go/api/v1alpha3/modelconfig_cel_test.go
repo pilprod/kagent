@@ -36,8 +36,10 @@ import (
 //     sending both risks hard 400s.
 //   - both fields carry Minimum=1, so a non-positive value is rejected at
 //     admission rather than silently ignored by the translator.
-//   - reasoningEffort accepts the provider-wide superset, including xhigh and
-//     minimal, while rejecting values outside that set.
+//   - reasoningEffort accepts the provider-wide superset through max and ultra,
+//     while rejecting values outside that set.
+//   - serviceTier accepts only fast and only when apiFormat is responses;
+//     omitting apiFormat defaults it to chatCompletions and is rejected.
 func TestOpenAIConfigValidation(t *testing.T) {
 	testEnv := &envtest.Environment{
 		BinaryAssetsDirectory: envtestAssetsDir(t),
@@ -59,9 +61,10 @@ func TestOpenAIConfigValidation(t *testing.T) {
 	require.NoError(t, cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}))
 
 	cases := []struct {
-		name       string
-		build      func() ctrl_client.Object
-		wantReject string // substring in admission error; empty means accept
+		name            string
+		build           func() ctrl_client.Object
+		wantReject      string // substring in admission error; empty means accept
+		wantServiceTier *OpenAIServiceTier
 	}{
 		{
 			name: "both maxTokens and maxCompletionTokens rejected",
@@ -158,6 +161,32 @@ func TestOpenAIConfigValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "max reasoning effort accepted",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-reasoning-max", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-sol",
+						Provider: ModelProviderOpenAI,
+						OpenAI:   &OpenAIConfig{ReasoningEffort: new(OpenAIReasoningEffort("max"))},
+					},
+				}
+			},
+		},
+		{
+			name: "ultra reasoning effort accepted",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-reasoning-ultra", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-sol",
+						Provider: ModelProviderOpenAI,
+						OpenAI:   &OpenAIConfig{ReasoningEffort: new(OpenAIReasoningEffort("ultra"))},
+					},
+				}
+			},
+		},
+		{
 			name: "minimal reasoning effort remains accepted",
 			build: func() ctrl_client.Object {
 				return &ModelConfig{
@@ -184,13 +213,68 @@ func TestOpenAIConfigValidation(t *testing.T) {
 			},
 			wantReject: "reasoningEffort",
 		},
+		{
+			name: "fast service tier with Responses API accepted",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-fast-responses", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI: &OpenAIConfig{
+							APIFormat:   new(OpenAIAPIFormatResponses),
+							ServiceTier: new(OpenAIServiceTierFast),
+						},
+					},
+				}
+			},
+			wantServiceTier: new(OpenAIServiceTierFast),
+		},
+		{
+			name: "fast service tier with default Chat Completions API rejected",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-fast-default-api", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI:   &OpenAIConfig{ServiceTier: new(OpenAIServiceTierFast)},
+					},
+				}
+			},
+			wantReject: "serviceTier is only supported with apiFormat responses",
+		},
+		{
+			name: "unknown service tier rejected",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-unknown-tier", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI: &OpenAIConfig{
+							APIFormat:   new(OpenAIAPIFormatResponses),
+							ServiceTier: new(OpenAIServiceTier("slow")),
+						},
+					},
+				}
+			},
+			wantReject: "serviceTier",
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := cl.Create(ctx, c.build())
+			object := c.build()
+			err := cl.Create(ctx, object)
 			if c.wantReject == "" {
 				require.NoError(t, err)
+				if c.wantServiceTier != nil {
+					stored := &ModelConfig{}
+					require.NoError(t, cl.Get(ctx, ctrl_client.ObjectKeyFromObject(object), stored))
+					require.NotNil(t, stored.Spec.OpenAI)
+					require.Equal(t, c.wantServiceTier, stored.Spec.OpenAI.ServiceTier)
+				}
 				return
 			}
 			require.Error(t, err)

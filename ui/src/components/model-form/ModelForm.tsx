@@ -56,6 +56,24 @@ import { ProviderIconWithLabel } from "./ProviderIcon";
 
 const { Text } = Typography;
 
+const ENUM_PARAM_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
+  apiFormat: [
+    { value: "chatCompletions", label: "Chat Completions" },
+    { value: "responses", label: "Responses" },
+  ],
+  reasoningEffort: [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ].map((value) => ({ value, label: value })),
+  serviceTier: [{ value: "fast", label: "Fast" }],
+};
+
 interface ModelFormProps {
   onSubmit: (payload: CreateModelConfigRequest) => Promise<void>;
   initial?: ModelDraft;
@@ -133,10 +151,16 @@ export function ModelForm({
   };
 
   const setParam = (key: string, value: string) => {
-    setDraft((current) => ({
-      ...current,
-      params: { ...current.params, [key]: value },
-    }));
+    setDraft((current) => {
+      const params = { ...current.params, [key]: value };
+      if (key === "serviceTier" && value === "fast") {
+        params.apiFormat = "responses";
+      }
+      if (key === "apiFormat" && value !== "responses") {
+        delete params.serviceTier;
+      }
+      return { ...current, params };
+    });
     setFailure(undefined);
   };
 
@@ -280,6 +304,7 @@ export function ModelForm({
     const value = draft.params[key] ?? "";
     const missing = required && submitted && !value.trim();
     const badNumber = submitted && isBadNumber(key, value);
+    const enumOptions = ENUM_PARAM_OPTIONS[key];
     return (
       <Form.Item
         key={key}
@@ -288,18 +313,31 @@ export function ModelForm({
         validateStatus={missing || badNumber ? "error" : undefined}
         help={
           missing
-            ? `${key} is required.`
-            : badNumber
-              ? `${key} must be a number.`
-              : undefined
+              ? `${key} is required.`
+              : badNumber
+                ? `${key} must be a number.`
+                : key === "serviceTier"
+                  ? "Fast is currently enforced only by the Codex Harness; standard kagent runtimes reject this setting instead of silently ignoring it."
+                  : undefined
         }
       >
-        <Input
-          data-testid={`model-param-${key}`}
-          placeholder={required ? `Enter ${key}` : `(optional) ${key}`}
-          value={value}
-          onChange={(event) => setParam(key, event.target.value)}
-        />
+        {enumOptions ? (
+          <Select
+            data-testid={`model-param-${key}`}
+            allowClear={!required}
+            placeholder={required ? `Choose ${key}` : `(optional) ${key}`}
+            value={value || undefined}
+            options={enumOptions}
+            onChange={(selected) => setParam(key, selected ?? "")}
+          />
+        ) : (
+          <Input
+            data-testid={`model-param-${key}`}
+            placeholder={required ? `Enter ${key}` : `(optional) ${key}`}
+            value={value}
+            onChange={(event) => setParam(key, event.target.value)}
+          />
+        )}
       </Form.Item>
     );
   };

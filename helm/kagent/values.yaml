@@ -193,11 +193,6 @@ controller:
   # -- Public gRPC URL advertised by AgentInstance Agent Cards.
   # @default -- `http://<fullname>-controller.<namespace>.svc:<grpc-port>`
   a2aGatewayUrl: ""
-  # -- The image used for declarative agents.
-  agentImage:
-    registry: ""
-    repository: kagent-dev/kagent/golang-adk
-    tag: "" # Will default to global, then Chart version
   # -- @deprecated Removed in 0.10.0. The A2A SDK now handles SSE buffering and timeouts
   # internally. These values have no effect and will be removed in a future release.
   streaming: null
@@ -277,6 +272,9 @@ controller:
     registry: ""
     repository: kagent-dev/kagent/controller
     tag: "" # Will default to global, then Chart version
+    # -- Immutable image digest. When set, this takes precedence over both the
+    # component and global tags and must be a full sha256 digest.
+    digest: ""
     pullPolicy: ""
   resources:
     requests:
@@ -330,6 +328,19 @@ controller:
     enabled: false
     ateApiEndpoint: ""
     atenetRouterURL: ""
+    # TLS material for the controller -> ate-api mTLS connection.
+    # "projected" preserves the upstream PodCertificate/ClusterTrustBundle
+    # integration. "existingSecret" is the GKE-compatible mode and references
+    # a pre-created Secret; this chart never accepts or creates PEM material.
+    tls:
+      mode: projected
+      # Required for existingSecret. Must be the internal ate-api Service DNS
+      # name carried by the serving certificate, for example api.ate-system.svc.
+      serverName: ""
+      existingSecret:
+        name: ""
+        serverCAKey: server-ca.pem
+        clientCredentialBundleKey: client-credential-bundle.pem
     # Substrate ate-api-server identity for env source resolution (secretKeyRef/configMapKeyRef on ActorTemplates).
     ateApiServer:
       namespace: ate-system
@@ -411,6 +422,9 @@ ui:
     registry: ""
     repository: kagent-dev/kagent/ui
     tag: ""
+    # -- Immutable image digest. When set, this takes precedence over both the
+    # component and global tags and must be a full sha256 digest.
+    digest: ""
     pullPolicy: ""
   resources:
     requests:

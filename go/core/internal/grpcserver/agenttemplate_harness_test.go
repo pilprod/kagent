@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -77,16 +76,12 @@ func testAgentTemplate(namespace, name, modelConfig string) *v1alpha3.AgentTempl
 	}
 }
 
-func testHarness(namespace, name, workerPool string) *v1alpha3.Harness {
+func testHarness(namespace, name, _ string) *v1alpha3.Harness {
 	return &v1alpha3.Harness{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 		Spec: v1alpha3.HarnessSpec{
 			Codex:    &v1alpha3.CodexHarness{},
 			Workload: v1alpha3.HarnessWorkload{Image: testHarnessImage},
-			Substrate: v1alpha3.HarnessSubstratePolicy{
-				WorkerPoolRef:  corev1.LocalObjectReference{Name: workerPool},
-				SnapshotPolicy: v1alpha3.HarnessSnapshotPolicy{Location: "s3://snapshots"},
-			},
 		},
 	}
 }

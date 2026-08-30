@@ -176,6 +176,16 @@ type LgCheckpointWrite struct {
 	DeletedAt    *time.Time
 }
 
+type McpRelayGrant struct {
+	CapabilityHash  []byte
+	AgentInstanceID string
+	Revision        string
+	BindingID       string
+	ExpiresAt       time.Time
+	RevokedAt       *time.Time
+	CreatedAt       time.Time
+}
+
 type Memory struct {
 	ID          string
 	AgentName   *string
@@ -205,6 +215,8 @@ type RuntimeRevision struct {
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 	AgentCard              []byte
+	McpPolicy              []byte
+	Placement              string
 }
 
 type Tool struct {

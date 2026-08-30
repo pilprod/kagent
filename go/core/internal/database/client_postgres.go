@@ -113,16 +113,29 @@ func (c *postgresClient) UpsertAgentTemplateHarnessPair(ctx context.Context, pai
 }
 
 func (c *postgresClient) UpsertRuntimeRevision(ctx context.Context, revision dbpkg.RuntimeRevision) error {
-	if err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
+	placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+	if err != nil {
+		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	}
+	policy, err := canonicalRuntimeRevisionMCPPolicy(revision.MCPPolicy)
+	if err != nil {
+		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	}
+	rows, err := c.q.UpsertRuntimeRevision(ctx, dbgen.UpsertRuntimeRevisionParams{
 		Revision: revision.Revision, Namespace: revision.Namespace,
 		AgentTemplateName: revision.AgentTemplateName, AgentTemplateUid: revision.AgentTemplateUID,
 		HarnessName: revision.HarnessName, HarnessUid: revision.HarnessUID,
-		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard,
+		SourceSnapshot: revision.SourceSnapshot, AgentCard: revision.AgentCard, McpPolicy: policy,
 		EgressDestinations:     revision.EgressDestinations,
 		ActorTemplateNamespace: revision.ActorTemplateNamespace, ActorTemplateName: revision.ActorTemplateName,
 		ActorTemplateUid: revision.ActorTemplateUID, Phase: revision.Phase, GoldenSnapshot: revision.GoldenSnapshot,
-	}); err != nil {
+		Placement: string(placement),
+	})
+	if err != nil {
 		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("upsert runtime revision %s: %w", revision.Revision, dbpkg.ErrRuntimeRevisionConflict)
 	}
 	return nil
 }
@@ -136,7 +149,8 @@ func (c *postgresClient) GetRuntimeRevision(ctx context.Context, revision string
 		Revision: row.Revision, Namespace: row.Namespace,
 		AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
 		HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
+		Placement:      dbpkg.RuntimeRevisionPlacement(row.Placement),
+		SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard, MCPPolicy: row.McpPolicy,
 		EgressDestinations:     row.EgressDestinations,
 		ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
 		ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
@@ -176,7 +190,8 @@ func (c *postgresClient) ListUnreferencedRuntimeRevisions(ctx context.Context) (
 			Revision: row.Revision, Namespace: row.Namespace,
 			AgentTemplateName: row.AgentTemplateName, AgentTemplateUID: row.AgentTemplateUid,
 			HarnessName: row.HarnessName, HarnessUID: row.HarnessUid,
-			SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard,
+			Placement:      dbpkg.RuntimeRevisionPlacement(row.Placement),
+			SourceSnapshot: row.SourceSnapshot, AgentCard: row.AgentCard, MCPPolicy: row.McpPolicy,
 			EgressDestinations:     row.EgressDestinations,
 			ActorTemplateNamespace: row.ActorTemplateNamespace, ActorTemplateName: row.ActorTemplateName,
 			ActorTemplateUID: row.ActorTemplateUid, Phase: row.Phase, GoldenSnapshot: row.GoldenSnapshot,
@@ -338,6 +353,13 @@ func (c *postgresClient) ForkAgentInstance(ctx context.Context, namespace, check
 		revision, err := q.GetRuntimeRevision(ctx, *checkpoint.PreparedRevision)
 		if err != nil {
 			return fmt.Errorf("get checkpoint runtime revision: %w", err)
+		}
+		placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(dbpkg.RuntimeRevisionPlacement(revision.Placement))
+		if err != nil {
+			return fmt.Errorf("get checkpoint runtime revision placement: %w", err)
+		}
+		if placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+			return dbpkg.ErrAgentInstanceSnapshotUnsupported
 		}
 		labels := map[string]string{}
 		if err := json.Unmarshal(checkpoint.SourceLabels, &labels); err != nil {
@@ -1011,6 +1033,20 @@ func (c *postgresClient) ReserveAgentInstanceCheckpoint(ctx context.Context, che
 		}
 		if instance.State != "READY" || instance.Operation != "NONE" {
 			return dbpkg.ErrAgentInstanceConflict
+		}
+		if instance.PreparedRevision == nil {
+			return fmt.Errorf("AgentInstance %s has no prepared revision", checkpoint.SourceInstanceID)
+		}
+		revision, err := q.GetRuntimeRevision(ctx, *instance.PreparedRevision)
+		if err != nil {
+			return fmt.Errorf("get checkpoint runtime revision: %w", err)
+		}
+		placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(dbpkg.RuntimeRevisionPlacement(revision.Placement))
+		if err != nil {
+			return fmt.Errorf("get checkpoint runtime revision placement: %w", err)
+		}
+		if placement == dbpkg.RuntimeRevisionPlacementExternalSlot {
+			return dbpkg.ErrAgentInstanceSnapshotUnsupported
 		}
 		boundary, err := q.GetLatestQuiescentAgentInstanceTask(ctx, instance.ContextID)
 		if errors.Is(err, pgx.ErrNoRows) {

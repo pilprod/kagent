@@ -3,14 +3,170 @@ package skillsinit
 import (
 	"archive/tar"
 	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func Test_validateOCIManifest_rejectsContentBeforeLayerDownload(t *testing.T) {
+	digest := v1.Hash{Algorithm: "sha256", Hex: strings.Repeat("a", 64)}
+	tests := map[string]v1.Manifest{
+		"compressed content above budget": {
+			Config: v1.Descriptor{Digest: digest, Size: maxOCIPullBytes},
+			Layers: []v1.Descriptor{{Digest: digest, Size: 1}},
+		},
+		"external layer URL": {
+			Config: v1.Descriptor{Digest: digest, Size: 1},
+			Layers: []v1.Descriptor{{Digest: digest, Size: 1, URLs: []string{"https://publisher.example/layer"}}},
+		},
+		"negative descriptor size": {
+			Config: v1.Descriptor{Digest: digest, Size: -1},
+		},
+	}
+	tooManyLayers := v1.Manifest{Config: v1.Descriptor{Digest: digest, Size: 1}}
+	tooManyLayers.Layers = make([]v1.Descriptor, maxOCIImageLayers+1)
+	tests["too many layers"] = tooManyLayers
+
+	for name, manifest := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, validateOCIManifest(&manifest))
+		})
+	}
+}
+
+func Test_boundedOCITransport_rejectsOversizedManifestWithoutReadingBody(t *testing.T) {
+	body := &trackingReadCloser{Reader: strings.NewReader("untrusted")}
+	transport := newBoundedOCITransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/vnd.oci.image.manifest.v1+json"}},
+			Body:          body,
+			ContentLength: maxOCIManifestBytes + 1,
+		}, nil
+	}))
+	request, err := http.NewRequest(http.MethodGet, "https://registry.example/v2/team/skill/manifests/sha256:digest", nil)
+	require.NoError(t, err)
+
+	_, err = transport.RoundTrip(request)
+	require.ErrorIs(t, err, errOCIResponseTooLarge)
+	assert.Zero(t, body.reads, "oversized content-length must fail before reading the response")
+	assert.True(t, body.closed, "rejected response body must be closed")
+}
+
+func Test_boundedOCIResponseBody_rejectsUnknownLengthManifestAtLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte{'x'}, maxOCIManifestBytes+1)
+	body := &trackingReadCloser{Reader: bytes.NewReader(payload)}
+	transport := newBoundedOCITransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/vnd.oci.image.manifest.v1+json"}},
+			Body:       body,
+			// A chunked registry response has no trustworthy Content-Length.
+			ContentLength: -1,
+		}, nil
+	}))
+	request, err := http.NewRequest(http.MethodGet, "https://registry.example/v2/team/skill/manifests/sha256:digest", nil)
+	require.NoError(t, err)
+	response, err := transport.RoundTrip(request)
+	require.NoError(t, err)
+
+	_, err = io.ReadAll(response.Body)
+	require.ErrorIs(t, err, errOCIResponseTooLarge)
+	assert.LessOrEqual(t, body.bytesRead, maxOCIManifestBytes+1)
+}
+
+func TestFetchOCIAnonymousDoesNotUseAmbientDockerCredentials(t *testing.T) {
+	const expectedAuthorization = "Basic dXNlcjpwYXNz"
+	var requests atomic.Int64
+	var sawCredential atomic.Bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		if request.Header.Get("Authorization") == expectedAuthorization {
+			sawCredential.Store(true)
+		}
+		response.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
+		response.Header().Set("WWW-Authenticate", `Basic realm="test-registry"`)
+		response.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "https://")
+	dockerConfig := t.TempDir()
+	config := `{"auths":{"` + host + `":{"auth":"dXNlcjpwYXNz"}}}`
+	require.NoError(t, os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte(config), 0o600))
+	t.Setenv("DOCKER_CONFIG", dockerConfig)
+	ref := OCIRef{
+		Image: host + "/runtime/skills/review@sha256:" + strings.Repeat("a", 64),
+		Dest:  filepath.Join(t.TempDir(), "skill"),
+	}
+
+	require.Error(t, FetchOCIAnonymous(ref, true))
+	assert.Greater(t, requests.Load(), int64(0))
+	assert.False(t, sawCredential.Load(), "anonymous external pull used ambient Docker credentials")
+
+	requests.Store(0)
+	sawCredential.Store(false)
+	require.Error(t, FetchOCI(ref, true))
+	assert.Greater(t, requests.Load(), int64(0))
+	assert.True(t, sawCredential.Load(), "test registry did not observe the configured control credential")
+}
+
+func Test_extractTarWithLimits_rejectsOversizedOrExcessiveArtifacts(t *testing.T) {
+	t.Run("extracted bytes", func(t *testing.T) {
+		err := extractTarWithLimits(
+			tarOf(t, tarEntry{Name: "SKILL.md", Mode: 0o644, Body: []byte("12345")}),
+			t.TempDir(), 4, 10,
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "extracted bytes")
+	})
+
+	t.Run("entry count", func(t *testing.T) {
+		err := extractTarWithLimits(
+			tarOf(t,
+				tarEntry{Name: "one", Mode: 0o644, Body: []byte("1")},
+				tarEntry{Name: "two", Mode: 0o644, Body: []byte("2")},
+			),
+			t.TempDir(), 10, 1,
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "entries")
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type trackingReadCloser struct {
+	io.Reader
+	reads     int
+	bytesRead int
+	closed    bool
+}
+
+func (body *trackingReadCloser) Read(buffer []byte) (int, error) {
+	body.reads++
+	read, err := body.Reader.Read(buffer)
+	body.bytesRead += read
+	return read, err
+}
+
+func (body *trackingReadCloser) Close() error {
+	body.closed = true
+	return nil
+}
 
 // Test_tarEntryToLocal_rejectsEscape covers every shape of tar-entry name
 // that the original `tar xf` pipeline would have happily honored: absolute

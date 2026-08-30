@@ -1430,7 +1430,11 @@ func (in *HarnessSpec) DeepCopyInto(out *HarnessSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	out.Substrate = in.Substrate
+	if in.Substrate != nil {
+		in, out := &in.Substrate, &out.Substrate
+		*out = new(HarnessSubstratePolicy)
+		**out = **in
+	}
 	if in.AllowedAgentTemplates != nil {
 		in, out := &in.AllowedAgentTemplates, &out.AllowedAgentTemplates
 		*out = new(HarnessAgentTemplateAdmission)
@@ -1940,6 +1944,11 @@ func (in *OpenAIConfig) DeepCopyInto(out *OpenAIConfig) {
 	if in.APIFormat != nil {
 		in, out := &in.APIFormat, &out.APIFormat
 		*out = new(OpenAIAPIFormat)
+		**out = **in
+	}
+	if in.ServiceTier != nil {
+		in, out := &in.ServiceTier, &out.ServiceTier
+		*out = new(OpenAIServiceTier)
 		**out = **in
 	}
 	if in.TokenExchange != nil {

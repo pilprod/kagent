@@ -419,14 +419,12 @@ func (g *Gateway) GetExtendedAgentCard(ctx context.Context, _ *a2atype.GetExtend
 	// security, and signatures belong to the gateway instead of the private
 	// runtime that produced that card.
 	card.SupportedInterfaces = []*a2atype.AgentInterface{a2atype.NewAgentInterface(g.gatewayURL, a2atype.TransportProtocolGRPC)}
-	// Extensions are the exception, and replacing the whole capabilities struct
-	// used to drop them. They describe what the runtime behind this gateway can
-	// negotiate — human-in-the-loop among them — which is not the gateway's to
-	// erase. A client discovers HITL by reading this card, so wiping it made
-	// answering an agent's question undiscoverable while the card still rendered
-	// perfectly.
-	extensions := card.Capabilities.Extensions
-	card.Capabilities = a2atype.AgentCapabilities{Streaming: true, ExtendedAgentCard: true, Extensions: extensions}
+	// Runtime capabilities remain authoritative. The gateway exposes the public
+	// transport and extended-card endpoint, but cannot make a non-streaming
+	// runtime stream or add runtime extensions such as HITL. Preserve those
+	// claims and add only the gateway-owned extended-card capability.
+	card.Capabilities.ExtendedAgentCard = true
+	card.Capabilities.PushNotifications = false
 	card.SecurityRequirements = nil
 	card.SecuritySchemes = nil
 	card.Signatures = nil
@@ -703,10 +701,22 @@ func validateTaskInfo(value a2atype.TaskInfoProvider, expected *a2atype.Task) er
 func (g *Gateway) storeEvent(ctx context.Context, instance *apiv1alpha1.AgentInstance, task *a2atype.Task, event a2atype.Event) error {
 	var snapshot *dbpkg.AgentInstanceTaskSnapshot
 	if task != nil && isQuiescent(task.Status.State) {
-		var err error
-		snapshot, err = g.workflow.Quiesce(ctx, instance)
+		revision, err := g.store.GetRuntimeRevision(ctx, instance.GetPreparedRevision())
 		if err != nil {
-			return fmt.Errorf("quiesce AgentInstance runtime: %w", err)
+			return fmt.Errorf("load prepared runtime revision: %w", err)
+		}
+		if revision == nil {
+			return fmt.Errorf("load prepared runtime revision: empty result")
+		}
+		placement, err := dbpkg.NormalizeRuntimeRevisionPlacement(revision.Placement)
+		if err != nil {
+			return fmt.Errorf("load prepared runtime revision: %w", err)
+		}
+		if placement == dbpkg.RuntimeRevisionPlacementKubernetesPod {
+			snapshot, err = g.workflow.Quiesce(ctx, instance)
+			if err != nil {
+				return fmt.Errorf("quiesce AgentInstance runtime: %w", err)
+			}
 		}
 	}
 	return g.store.StoreAgentInstanceTaskEvent(ctx, instance.GetId(), task, event, snapshot)

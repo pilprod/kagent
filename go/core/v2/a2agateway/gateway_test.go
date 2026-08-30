@@ -62,6 +62,9 @@ func (s *gatewayTestStore) GetAgentInstance(_ context.Context, namespace, id, us
 }
 
 func (s *gatewayTestStore) GetRuntimeRevision(context.Context, string) (*dbpkg.RuntimeRevision, error) {
+	if s.revision == nil {
+		return &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementKubernetesPod}, nil
+	}
 	return s.revision, nil
 }
 
@@ -689,7 +692,7 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 			AgentCard: []byte(`{
 				"name":"assistant","description":"pinned description","version":"v1",
 				"supportedInterfaces":[{"url":"http://127.0.0.1:80","protocolBinding":"GRPC","protocolVersion":"1.0"}],
-				"capabilities":{"pushNotifications":true,"extensions":[{"uri":"https://kagent.dev/extensions/hitl/v1","required":false}]},"skills":[],
+				"capabilities":{"streaming":true,"pushNotifications":true,"extensions":[{"uri":"https://kagent.dev/extensions/hitl/v1","required":false}]},"skills":[],
 				"defaultInputModes":["text"],"defaultOutputModes":["text"]
 			}`),
 		},
@@ -712,15 +715,37 @@ func TestGatewayBuildsAgentCardFromPinnedRevision(t *testing.T) {
 	if !card.Capabilities.Streaming || !card.Capabilities.ExtendedAgentCard || card.Capabilities.PushNotifications {
 		t.Fatalf("gateway capabilities = %#v", card.Capabilities)
 	}
-	// Transport and streaming are the gateway's to state, but extensions describe
-	// what the runtime can negotiate. Replacing the whole struct used to drop them,
-	// which left a client no way to discover that an agent's question is answerable
-	// while the card still looked complete.
+	// Streaming and extensions describe what the runtime can negotiate. Replacing
+	// the whole struct used to drop extensions, which left a client no way to
+	// discover that an agent's question is answerable while the card still looked
+	// complete.
 	if len(card.Capabilities.Extensions) != 1 || card.Capabilities.Extensions[0].URI != "https://kagent.dev/extensions/hitl/v1" {
 		t.Fatalf("runtime extensions = %#v, want the runtime's own preserved", card.Capabilities.Extensions)
 	}
 	if authorizer.verb != auth.VerbGet || dialer.instance != nil {
 		t.Fatalf("authorization verb = %q, runtime dialed = %v", authorizer.verb, dialer.instance != nil)
+	}
+}
+
+func TestGatewayDoesNotAdvertiseUnsupportedRuntimeStreaming(t *testing.T) {
+	store := &gatewayTestStore{
+		instance: gatewayTestInstance(),
+		revision: &dbpkg.RuntimeRevision{
+			Revision: "coding-revision",
+			AgentCard: []byte(`{
+				"name":"codex","version":"v1",
+				"supportedInterfaces":[{"url":"http://127.0.0.1:80","protocolBinding":"GRPC","protocolVersion":"1.0"}],
+				"capabilities":{},"skills":[],"defaultInputModes":["text"],"defaultOutputModes":["text"]
+			}`),
+		},
+	}
+	card, err := New(store, &gatewayTestAuthorizer{}, &gatewayTestDialer{}, &gatewayTestWorkflow{}, gatewayTestURL).
+		GetExtendedAgentCard(gatewayTestContext(), &a2atype.GetExtendedAgentCardRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Capabilities.Streaming || !card.Capabilities.ExtendedAgentCard {
+		t.Fatalf("gateway capabilities = %#v", card.Capabilities)
 	}
 }
 
@@ -747,6 +772,45 @@ func TestGatewayPersistsBeforePublishing(t *testing.T) {
 	}
 	if workflow.quiesceCalls != 1 || store.snapshot == nil || store.snapshot.UID != "snapshot-uid" {
 		t.Fatalf("quiescence calls = %d, stored snapshot = %#v", workflow.quiesceCalls, store.snapshot)
+	}
+}
+
+func TestGatewayExternalSlotPersistsQuiescentEventsWithoutSnapshot(t *testing.T) {
+	for _, state := range []a2atype.TaskState{a2atype.TaskStateCompleted, a2atype.TaskStateInputRequired} {
+		t.Run(string(state), func(t *testing.T) {
+			task := &a2atype.Task{ID: "task-1", ContextID: gatewayTestID, Status: a2atype.TaskStatus{State: state}}
+			store := &gatewayTestStore{
+				instance: gatewayTestInstance(), active: task,
+				revision: &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementExternalSlot},
+			}
+			workflow := &gatewayTestWorkflow{}
+			gateway := &Gateway{store: store, workflow: workflow}
+
+			if err := gateway.storeEvent(t.Context(), store.instance, task, task); err != nil {
+				t.Fatal(err)
+			}
+			if workflow.quiesceCalls != 0 || store.snapshot != nil || len(store.stored) != 1 || store.task != task {
+				t.Fatalf("quiescence calls = %d, snapshot = %#v, stored events = %d, task = %#v",
+					workflow.quiesceCalls, store.snapshot, len(store.stored), store.task)
+			}
+		})
+	}
+}
+
+func TestGatewayKubernetesPodStillQuiescesBeforePersisting(t *testing.T) {
+	task := &a2atype.Task{ID: "task-1", ContextID: gatewayTestID, Status: a2atype.TaskStatus{State: a2atype.TaskStateCompleted}}
+	store := &gatewayTestStore{
+		instance: gatewayTestInstance(), active: task,
+		revision: &dbpkg.RuntimeRevision{Placement: dbpkg.RuntimeRevisionPlacementKubernetesPod},
+	}
+	workflow := &gatewayTestWorkflow{}
+	gateway := &Gateway{store: store, workflow: workflow}
+
+	if err := gateway.storeEvent(t.Context(), store.instance, task, task); err != nil {
+		t.Fatal(err)
+	}
+	if workflow.quiesceCalls != 1 || store.snapshot == nil || store.snapshot.UID != "snapshot-uid" || len(store.stored) != 1 {
+		t.Fatalf("quiescence calls = %d, snapshot = %#v, stored events = %d", workflow.quiesceCalls, store.snapshot, len(store.stored))
 	}
 }
 

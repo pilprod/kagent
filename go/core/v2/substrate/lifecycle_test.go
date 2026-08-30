@@ -2,6 +2,7 @@ package substrate
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -135,6 +136,89 @@ func TestLifecycleJoinsTransitionalActorStates(t *testing.T) {
 	}
 }
 
+func TestLifecycleCreateExternalSlotClaimsProviderBeforePublishingEndpoint(t *testing.T) {
+	instance := lifecycleTestInstance()
+	revisions := lifecycleTestRevisions()
+	revisions.revision.Placement = dbpkg.RuntimeRevisionPlacementExternalSlot
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
+
+	endpoint, err := NewLifecycle(revisions, actors).Create(t.Context(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := actors.actors[actorKey(instance.GetNamespace(), actorName(instance.GetId()))]
+	if endpoint.A2AAuthority == "" || actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || actors.resumeCalls != 1 {
+		t.Fatalf("Create() endpoint = %+v, Actor = %+v, resume calls = %d", endpoint, actor, actors.resumeCalls)
+	}
+	if _, err := NewLifecycle(revisions, actors).Create(t.Context(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if actors.resumeCalls != 2 {
+		t.Fatalf("retried Create() resume calls = %d, want 2", actors.resumeCalls)
+	}
+}
+
+func TestLifecycleCreateExternalSlotRejectsFailedProviderClaim(t *testing.T) {
+	instance := lifecycleTestInstance()
+	revisions := lifecycleTestRevisions()
+	revisions.revision.Placement = dbpkg.RuntimeRevisionPlacementExternalSlot
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}, resumeErr: errors.New("provider unavailable")}
+
+	if endpoint, err := NewLifecycle(revisions, actors).Create(t.Context(), instance); err == nil || endpoint.A2AAuthority != "" {
+		t.Fatalf("Create() endpoint = %+v, error = %v", endpoint, err)
+	}
+}
+
+func TestLifecycleExternalSlotRejectsSnapshotOperationsBeforeMutation(t *testing.T) {
+	instance := lifecycleTestInstance()
+	revisions := lifecycleTestRevisions()
+	revisions.revision.Placement = dbpkg.RuntimeRevisionPlacementExternalSlot
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{}}
+	lifecycle := NewLifecycle(revisions, actors)
+	checkpoint := &dbpkg.AgentInstanceCheckpoint{ID: uuid.MustParse("018f47a2-4efb-7c21-a848-123456789abc")}
+
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "quiesce", run: func() error { _, err := lifecycle.Quiesce(t.Context(), instance); return err }},
+		{name: "suspend", run: func() error { return lifecycle.Suspend(t.Context(), instance) }},
+		{name: "resume", run: func() error { return lifecycle.Resume(t.Context(), instance) }},
+		{name: "fork", run: func() error { _, err := lifecycle.Fork(t.Context(), instance, checkpoint); return err }},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.run(); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("error = %v, want FailedPrecondition", err)
+			}
+		})
+	}
+	if actors.ensureCalls != 0 || actors.suspendCalls != 0 || actors.resumeCalls != 0 || actors.createCalls != 0 {
+		t.Fatalf("mutation calls: ensure=%d suspend=%d resume=%d create=%d", actors.ensureCalls, actors.suspendCalls, actors.resumeCalls, actors.createCalls)
+	}
+}
+
+func TestLifecycleDeleteExternalSlotSkipsSuspend(t *testing.T) {
+	instance := lifecycleTestInstance()
+	revisions := lifecycleTestRevisions()
+	revisions.revision.Placement = dbpkg.RuntimeRevisionPlacementExternalSlot
+	name := actorName(instance.GetId())
+	actors := &lifecycleTestActors{actors: map[string]*ateapipb.Actor{
+		actorKey(instance.GetNamespace(), name): {
+			ActorTemplateNamespace: revisions.revision.ActorTemplateNamespace,
+			ActorTemplateName:      revisions.revision.ActorTemplateName,
+			Status:                 &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
+		},
+	}}
+
+	if err := NewLifecycle(revisions, actors).Delete(t.Context(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if actors.suspendCalls != 0 || actors.deleteCalls != 1 || !actors.deleteAnyState {
+		t.Fatalf("suspend calls = %d, delete calls = %d, any state = %t", actors.suspendCalls, actors.deleteCalls, actors.deleteAnyState)
+	}
+}
+
 func lifecycleTestInstance() *apiv1alpha1.AgentInstance {
 	return &apiv1alpha1.AgentInstance{
 		Id: "8bd650a8-9775-488f-8bc1-0d52bf7bdcab", Namespace: "team-a", PreparedRevision: "revision-1",
@@ -156,13 +240,23 @@ func (s *lifecycleTestRevisionStore) GetRuntimeRevision(context.Context, string)
 }
 
 type lifecycleTestActors struct {
-	actors      map[string]*ateapipb.Actor
-	createCalls int
+	actors         map[string]*ateapipb.Actor
+	createCalls    int
+	ensureCalls    int
+	resumeCalls    int
+	suspendCalls   int
+	deleteCalls    int
+	deleteAnyState bool
+	resumeErr      error
+	resumeState    ateapipb.ActorState
 }
 
 func actorKey(atespace, name string) string { return atespace + "/" + name }
 
-func (*lifecycleTestActors) EnsureAtespace(context.Context, string) error { return nil }
+func (a *lifecycleTestActors) EnsureAtespace(context.Context, string) error {
+	a.ensureCalls++
+	return nil
+}
 
 func (a *lifecycleTestActors) GetActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
 	actor := a.actors[actorKey(atespace, name)]
@@ -201,12 +295,21 @@ func (a *lifecycleTestActors) CreateActorFromSnapshotTag(_ context.Context, ates
 }
 
 func (a *lifecycleTestActors) ResumeActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
+	a.resumeCalls++
+	if a.resumeErr != nil {
+		return nil, a.resumeErr
+	}
 	actor := a.actors[actorKey(atespace, name)]
-	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
+	if a.resumeState != ateapipb.ActorState_ACTOR_STATE_UNSPECIFIED {
+		actor.Status.State = a.resumeState
+	} else {
+		actor.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
+	}
 	return actor, nil
 }
 
 func (a *lifecycleTestActors) SuspendActor(_ context.Context, atespace, name string) (*ateapipb.Actor, error) {
+	a.suspendCalls++
 	actor := a.actors[actorKey(atespace, name)]
 	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_SUSPENDED
 	actor.Status.LatestSnapshot = &ateapipb.ObjectRef{Atespace: atespace, Name: "snapshot-1"}
@@ -220,7 +323,9 @@ func (*lifecycleTestActors) GetActorSnapshot(_ context.Context, atespace, name s
 	}, nil
 }
 
-func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string) error {
+func (a *lifecycleTestActors) DeleteActor(_ context.Context, atespace, name string, anyState bool) error {
+	a.deleteCalls++
+	a.deleteAnyState = anyState
 	delete(a.actors, actorKey(atespace, name))
 	return nil
 }

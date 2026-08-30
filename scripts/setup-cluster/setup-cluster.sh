@@ -9,7 +9,7 @@ set -euo pipefail
 
 # The repo this script lives in, so it works from any checkout and any directory.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SUBSTRATE_VERSION=0.0.20
+SUBSTRATE_VERSION=0.0.22
 cd "$REPO"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
@@ -21,19 +21,29 @@ step "2/10  kubectl-ate, the tool that mints the CA and JWT pools"
 # This one runs on *this* machine rather than in the cluster, so it follows the host OS.
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 HOSTARCH="$(uname -m)"; [ "$HOSTARCH" = "x86_64" ] && HOSTARCH=amd64; [ "$HOSTARCH" = "aarch64" ] && HOSTARCH=arm64
-if [ ! -x /tmp/kubectl-ate ]; then
-  curl -fsSL -o /tmp/kubectl-ate \
-    "https://github.com/kagent-dev/substrate/releases/download/v${SUBSTRATE_VERSION}/kubectl-ate-${OS}-${HOSTARCH}"
-  chmod +x /tmp/kubectl-ate
+ATE="/tmp/kubectl-ate-v${SUBSTRATE_VERSION}-${OS}-${HOSTARCH}"
+if [ ! -x "$ATE" ]; then
+  asset="kubectl-ate-v${SUBSTRATE_VERSION}-${OS}-${HOSTARCH}.tar.gz"
+  checksums="kubectl-ate-v${SUBSTRATE_VERSION}-checksums.txt"
+  release_url="https://github.com/pilprod/substrate/releases/download/v${SUBSTRATE_VERSION}"
+  download_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubectl-ate-download.XXXXXX")"
+  trap 'rm -rf -- "$download_dir"' EXIT
+  curl -fsSL -o "${download_dir}/${asset}" "${release_url}/${asset}"
+  curl -fsSL -o "${download_dir}/${checksums}" "${release_url}/${checksums}"
+  checksum_line="$(awk -v asset="${asset}" '$2 == asset && $1 ~ /^[0-9a-f]{64}$/ { print }' "${download_dir}/${checksums}")"
+  [ "$(printf '%s\n' "${checksum_line}" | grep -c .)" -eq 1 ]
+  (cd "$download_dir" && printf '%s\n' "${checksum_line}" | shasum -a 256 --check)
+  [ "$(tar -tzf "${download_dir}/${asset}")" = "kubectl-ate" ]
+  tar -xzf "${download_dir}/${asset}" -C "$download_dir" kubectl-ate
+  install -m 0755 "${download_dir}/kubectl-ate" "$ATE"
 fi
-ATE=/tmp/kubectl-ate
 
 step "3/10  Substrate CRDs and substrate"
 helm upgrade --install substrate-crds \
-  "oci://ghcr.io/kagent-dev/substrate/helm/substrate-crds" --version "$SUBSTRATE_VERSION" \
+  "oci://ghcr.io/pilprod/substrate/helm/substrate-crds" --version "$SUBSTRATE_VERSION" \
   --namespace ate-system --create-namespace
 helm upgrade --install substrate \
-  "oci://ghcr.io/kagent-dev/substrate/helm/substrate" --version "$SUBSTRATE_VERSION" \
+  "oci://ghcr.io/pilprod/substrate/helm/substrate" --version "$SUBSTRATE_VERSION" \
   --namespace ate-system \
   --set-string 'atelet.extraArgs[0]=--localhost-registry-replacement=kind-registry:5000'
 
@@ -62,7 +72,7 @@ kubectl create configmap ate-api-authentication -n ate-system \
   --from-literal=authentication.yaml=$'actorIdentityJWTProvider: kubernetes\njwtProviders:\n- name: kubernetes\n  issuer: https://kubernetes.default.svc\n  audiences: [api.ate-system.svc]\n  certificateAuthorityFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n  discoveryTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token\n' \
   --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade substrate "oci://ghcr.io/kagent-dev/substrate/helm/substrate" \
+helm upgrade substrate "oci://ghcr.io/pilprod/substrate/helm/substrate" \
   --version "$SUBSTRATE_VERSION" --namespace ate-system --reuse-values --wait --timeout 5m
 
 step "6/10  kagent"
@@ -73,7 +83,7 @@ make helm-install KAGENT_HELM_EXTRA_ARGS="\
   --set controller.substrate.defaultWorkerPool.name=kagent-default \
   --set substrateWorkerPool.create=true \
   --set substrateWorkerPool.replicas=8 \
-  --set-string substrateWorkerPool.ateomImage=ghcr.io/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
+  --set-string substrateWorkerPool.ateomImage=ghcr.io/pilprod/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
 
 step "7/10  The controller and the UI, both built from this checkout"
 # The chart installs published images, so without this the cluster would run somebody

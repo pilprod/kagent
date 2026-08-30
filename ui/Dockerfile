@@ -1,8 +1,9 @@
 ### STAGE 1: Dependencies
 ARG BASE_IMAGE_REGISTRY=cgr.dev
+ARG WOLFI_BASE_DIGEST=sha256:19f7a7b40a11c435311e3784bd134c6b6f19677462440da48f96d5c84eefd669
 ARG TOOLS_NODE_VERSION=24
 ARG BUILDPLATFORM
-FROM --platform=$BUILDPLATFORM $BASE_IMAGE_REGISTRY/chainguard/wolfi-base:latest AS deps
+FROM --platform=$BUILDPLATFORM ${BASE_IMAGE_REGISTRY}/chainguard/wolfi-base:latest@${WOLFI_BASE_DIGEST} AS deps
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 # This is used to print the build platform in the logs
@@ -49,7 +50,7 @@ RUN yarn build \
 ### STAGE 3: Runtime
 # nginx only — the UI is a static bundle now, so there is no node process and no
 # node runtime in the final image.
-FROM $BASE_IMAGE_REGISTRY/chainguard/wolfi-base:latest AS final
+FROM ${BASE_IMAGE_REGISTRY}/chainguard/wolfi-base:latest@${WOLFI_BASE_DIGEST} AS final
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 # This is used to print the build platform in the logs

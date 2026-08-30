@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "controller": {
+      "type": "object",
+      "properties": {
+        "substrate": {
+          "type": "object",
+          "properties": {
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "projected",
+                    "existingSecret"
+                  ]
+                },
+                "serverName": {
+                  "type": "string",
+                  "maxLength": 253
+                },
+                "existingSecret": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "maxLength": 253
+                    },
+                    "serverCAKey": {
+                      "type": "string",
+                      "maxLength": 253
+                    },
+                    "clientCredentialBundleKey": {
+                      "type": "string",
+                      "maxLength": 253
+                    }
+                  }
+                }
+              },
+              "required": [
+                "mode",
+                "serverName",
+                "existingSecret"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "mode": {
+                        "const": "existingSecret"
+                      }
+                    },
+                    "required": [
+                      "mode"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "serverName": {
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?\\.svc(?:\\.cluster\\.local)?$"
+                      },
+                      "existingSecret": {
+                        "required": [
+                          "name",
+                          "serverCAKey",
+                          "clientCredentialBundleKey"
+                        ],
+                        "properties": {
+                          "name": {
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$"
+                          },
+                          "serverCAKey": {
+                            "minLength": 1,
+                            "pattern": "^[A-Za-z0-9._-]+$"
+                          },
+                          "clientCredentialBundleKey": {
+                            "minLength": 1,
+                            "pattern": "^[A-Za-z0-9._-]+$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

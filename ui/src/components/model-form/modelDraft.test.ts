@@ -42,6 +42,26 @@ describe("buildModelPayload — provider params", () => {
     expect(req.spec.openAI).not.toHaveProperty("baseUrl");
   });
 
+  it("preserves the OpenAI Responses model, effort, speed, and completion limit", () => {
+    const req = buildModelPayload(
+      draft({
+        params: {
+          apiFormat: "responses",
+          reasoningEffort: "high",
+          serviceTier: "fast",
+          maxCompletionTokens: "2048",
+        },
+      }),
+    );
+
+    expect(req.spec.openAI).toEqual({
+      apiFormat: "responses",
+      reasoningEffort: "high",
+      serviceTier: "fast",
+      maxCompletionTokens: 2048,
+    });
+  });
+
   it("routes params to the right block per provider (Azure required params)", () => {
     const req = buildModelPayload(
       draft({
@@ -186,6 +206,35 @@ describe("modelDraftFrom — round trip", () => {
     expect(ollama.model).toBe("llama3.2");
     expect(ollama.modelTag).toBe("8b");
     expect(ollama.authType).toBe("none");
+  });
+
+  it("round-trips OpenAI Responses model, effort, speed, and completion limit", () => {
+    const d = modelDraftFrom({
+      ref: "kagent/codex",
+      spec: {
+        provider: "OpenAI",
+        model: "gpt-5.4",
+        openAI: {
+          apiFormat: "responses",
+          reasoningEffort: "ultra",
+          serviceTier: "fast",
+          maxCompletionTokens: 4096,
+        },
+      },
+    });
+
+    expect(d.params).toEqual({
+      apiFormat: "responses",
+      reasoningEffort: "ultra",
+      serviceTier: "fast",
+      maxCompletionTokens: "4096",
+    });
+    expect(buildModelPayload(d).spec.openAI).toEqual({
+      apiFormat: "responses",
+      reasoningEffort: "ultra",
+      serviceTier: "fast",
+      maxCompletionTokens: 4096,
+    });
   });
 });
 

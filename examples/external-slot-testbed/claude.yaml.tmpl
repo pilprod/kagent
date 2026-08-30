@@ -1,0 +1,36 @@
+apiVersion: kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: claude
+  namespace: kagent-testbed
+spec:
+  claude: {}
+  workload:
+    image: "@@CLAUDE_HARNESS_IMAGE@@"
+  allowedAgentTemplates:
+    selector:
+      matchLabels:
+        kagent.dev/testbed-runtime: claude
+---
+apiVersion: kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: claude-subscription
+  namespace: kagent-testbed
+spec:
+  provider: Anthropic
+  model: claude-sonnet-4-5
+---
+apiVersion: kagent.dev/v1alpha3
+kind: AgentTemplate
+metadata:
+  name: claude
+  namespace: kagent-testbed
+  labels:
+    kagent.dev/testbed-runtime: claude
+spec:
+  description: Claude Code running on an enrolled external host
+  modelConfig:
+    name: claude-subscription
+  systemPrompt: |
+    Work as a coding agent. Explain material changes and report verification results.

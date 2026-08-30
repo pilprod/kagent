@@ -6,6 +6,7 @@ import (
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
+	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
 	"istio.io/istio/pkg/kube/krt"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -57,7 +58,7 @@ func TestReconciliationCollectionsCompileAndObserveRevision(t *testing.T) {
 	matchingHarness.UID = "harness-uid"
 	matchingHarness.Spec.Kagent = &kagentv1alpha3.KagentHarness{}
 	matchingHarness.Spec.Workload.Image = "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	matchingHarness.Spec.Substrate = kagentv1alpha3.HarnessSubstratePolicy{
+	matchingHarness.Spec.Substrate = &kagentv1alpha3.HarnessSubstratePolicy{
 		WorkerPoolRef:  corev1.LocalObjectReference{Name: "default"},
 		SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"},
 	}
@@ -119,6 +120,79 @@ func TestReconciliationCollectionsCompileAndObserveRevision(t *testing.T) {
 	})
 }
 
+func TestReconciliationCodingHarnessUsesExternalActorIngress(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		provider  kagentv1alpha3.ModelProvider
+		configure func(*kagentv1alpha3.Harness)
+	}{
+		{name: "codex", provider: kagentv1alpha3.ModelProviderOpenAI, configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Codex = &kagentv1alpha3.CodexHarness{} }},
+		{name: "claude", provider: kagentv1alpha3.ModelProviderAnthropic, configure: func(harness *kagentv1alpha3.Harness) { harness.Spec.Claude = &kagentv1alpha3.ClaudeHarness{} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			t.Cleanup(func() { close(stop) })
+			opts := krt.NewOptionsBuilder(stop, "test", nil)
+			template := &kagentv1alpha3.AgentTemplate{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "assistant", UID: "template-uid", Labels: map[string]string{"runtime": test.name}},
+				Spec: kagentv1alpha3.AgentTemplateSpec{
+					ModelConfig:  kagentv1alpha3.AgentTemplateLocalReference{Name: "model"},
+					SystemPrompt: "help",
+				},
+			}
+			harness := harness("team-a", test.name, map[string]string{"runtime": test.name})
+			harness.UID = "harness-uid"
+			test.configure(harness)
+			harness.Spec.Workload.Image = "example.com/coding-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			templates := krt.NewStaticCollection(nil, []*kagentv1alpha3.AgentTemplate{template}, opts.WithName("AgentTemplates")...)
+			harnesses := krt.NewStaticCollection(nil, []*kagentv1alpha3.Harness{harness}, opts.WithName("Harnesses")...)
+			actorTemplates := krt.NewStaticCollection[*atev1alpha1.ActorTemplate](nil, nil, opts.WithName("ActorTemplates")...)
+			pairs := newPairCollection(templates, harnesses, opts)
+			reconciliations := newPairReconciliations(
+				pairs,
+				templates,
+				krt.NewStaticCollection(nil, []*kagentv1alpha3.ModelConfig{{
+					ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "model"},
+					Spec:       kagentv1alpha3.ModelConfigSpec{Provider: test.provider, Model: "model"},
+				}}, opts.WithName("ModelConfigs")...),
+				krt.NewStaticCollection[*kagentv1alpha3.RemoteMCPServer](nil, nil, opts.WithName("RemoteMCPServers")...),
+				krt.NewStaticCollection[*corev1.ConfigMap](nil, nil, opts.WithName("ConfigMaps")...),
+				krt.NewStaticCollection[*corev1.Secret](nil, nil, opts.WithName("Secrets")...),
+				krt.NewStaticCollection[*atev1alpha1.WorkerPool](nil, nil, opts.WithName("WorkerPools")...),
+				actorTemplates,
+				opts,
+			)
+			waitFor(t, func() bool { return len(reconciliations.List()) == 1 })
+			state := reconciliations.List()[0]
+			if state.Failure != nil {
+				t.Fatalf("coding Harness reconciliation failed: %+v", state.Failure)
+			}
+			if state.Revision == nil || state.Revision.Placement != v2translator.RevisionPlacementExternalSlot || state.DesiredActorTemplate == nil {
+				t.Fatalf("coding Harness runtime state = revision=%+v ActorTemplate=%+v", state.Revision, state.DesiredActorTemplate)
+			}
+			if spec := state.DesiredActorTemplate.Spec; spec.WorkerProvider != atev1alpha1.WorkerProviderExternalSlot || spec.SandboxClass != atev1alpha1.SandboxClass(v2translator.SandboxClassHostProcessHardened) || spec.WorkerSelector != nil || len(spec.Volumes) != 0 || spec.SnapshotsConfig.Location != "" {
+				t.Fatalf("coding Harness ActorTemplate is not ExternalSlot-only: %+v", spec)
+			}
+
+			// Kubernetes applies these ActorTemplate CRD defaults before returning
+			// the object. They must not make the immutable compiled revision look
+			// conflicting; sandboxClass itself remains explicit and unchanged.
+			observed := state.DesiredActorTemplate.DeepCopy()
+			observed.Spec.SnapshotsConfig.OnPause = atev1alpha1.SnapshotScopeFull
+			observed.Spec.SnapshotsConfig.OnCommit = atev1alpha1.SnapshotScopeFull
+			observed.Spec.SnapshotsConfig.OnResume.FromData = atev1alpha1.ResumeSourceColdBoot
+			actorTemplates.UpdateObject(observed)
+			waitFor(t, func() bool {
+				states := reconciliations.List()
+				return len(states) == 1 && states[0].ObservedActorTemplate != nil
+			})
+			if observedState := reconciliations.List()[0]; observedState.Failure != nil {
+				t.Fatalf("API-defaulted ExternalSlot ActorTemplate was rejected: %+v", observedState.Failure)
+			}
+		})
+	}
+}
+
 func TestReconciliationTracksSharedAgentTemplate(t *testing.T) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -139,7 +213,7 @@ func TestReconciliationTracksSharedAgentTemplate(t *testing.T) {
 	harness := harness("team-a", "kagent", map[string]string{"runtime": "python"})
 	harness.Spec.Kagent = &kagentv1alpha3.KagentHarness{}
 	harness.Spec.Workload.Image = "example.com/kagent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	harness.Spec.Substrate = kagentv1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}}
+	harness.Spec.Substrate = &kagentv1alpha3.HarnessSubstratePolicy{WorkerPoolRef: corev1.LocalObjectReference{Name: "default"}, SnapshotPolicy: kagentv1alpha3.HarnessSnapshotPolicy{Location: "snapshots"}}
 	templates := krt.NewStaticCollection(nil, []*kagentv1alpha3.AgentTemplate{root, child}, opts.WithName("AgentTemplates")...)
 	pairs := newPairCollection(templates, krt.NewStaticCollection(nil, []*kagentv1alpha3.Harness{harness}, opts.WithName("Harnesses")...), opts)
 	reconciliations := newPairReconciliations(

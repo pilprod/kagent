@@ -112,6 +112,7 @@ const PROVIDER_SPEC_KEY: Record<string, keyof ModelConfigSpec> = {
 /** Parameters the CRD types as numbers rather than strings. */
 const NUMERIC_PARAM_KEYS = new Set([
   "maxTokens",
+  "maxCompletionTokens",
   "maxOutputTokens",
   "topK",
   "seed",

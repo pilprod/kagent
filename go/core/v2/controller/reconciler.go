@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	kagentv1alpha3 "github.com/kagent-dev/kagent/go/api/v1alpha3"
 	"github.com/kagent-dev/kagent/go/core/v2/substrate"
 	v2translator "github.com/kagent-dev/kagent/go/core/v2/translator"
+	claudetranslator "github.com/kagent-dev/kagent/go/core/v2/translator/claude"
+	codextranslator "github.com/kagent-dev/kagent/go/core/v2/translator/codex"
 	kagenttranslator "github.com/kagent-dev/kagent/go/core/v2/translator/kagent"
 	"istio.io/istio/pkg/kube/controllers"
 	"istio.io/istio/pkg/kube/krt"
@@ -46,6 +49,56 @@ type ReconciliationFailure struct {
 	Message   string
 }
 
+const (
+	defaultActorTemplateReadyzPath           = "/readyz"
+	defaultActorTemplateReadyzTimeoutSeconds = 30
+)
+
+// actorTemplateSpecsEqual compares the effective immutable specs Kubernetes
+// persists. CRD structural-schema defaults are applied by the API server, so a
+// freshly compiled spec can legitimately differ from the object returned by a
+// subsequent GET even though both describe the same ActorTemplate. Normalize
+// deep copies rather than mutating the compiled revision: the revision digest
+// and ExternalSlot desired semantics must remain independent of admission.
+func actorTemplateSpecsEqual(left, right atev1alpha1.ActorTemplateSpec) bool {
+	return apiequality.Semantic.DeepEqual(
+		actorTemplateSpecWithCRDDefaults(&left),
+		actorTemplateSpecWithCRDDefaults(&right),
+	)
+}
+
+func actorTemplateSpecWithCRDDefaults(spec *atev1alpha1.ActorTemplateSpec) *atev1alpha1.ActorTemplateSpec {
+	defaulted := spec.DeepCopy()
+	if defaulted.WorkerProvider == "" {
+		defaulted.WorkerProvider = atev1alpha1.WorkerProviderKubernetesPod
+	}
+	if defaulted.SandboxClass == "" {
+		defaulted.SandboxClass = atev1alpha1.SandboxClassGvisor
+	}
+	if defaulted.SnapshotsConfig.OnPause == "" {
+		defaulted.SnapshotsConfig.OnPause = atev1alpha1.SnapshotScopeFull
+	}
+	if defaulted.SnapshotsConfig.OnCommit == "" {
+		defaulted.SnapshotsConfig.OnCommit = atev1alpha1.SnapshotScopeFull
+	}
+	if defaulted.SnapshotsConfig.OnResume.FromData == "" {
+		defaulted.SnapshotsConfig.OnResume.FromData = atev1alpha1.ResumeSourceColdBoot
+	}
+	for i := range defaulted.Containers {
+		readyz := defaulted.Containers[i].Readyz
+		if readyz == nil {
+			continue
+		}
+		if readyz.TimeoutSeconds == 0 {
+			readyz.TimeoutSeconds = defaultActorTemplateReadyzTimeoutSeconds
+		}
+		if readyz.HTTPGet != nil && readyz.HTTPGet.Path == "" {
+			readyz.HTTPGet.Path = defaultActorTemplateReadyzPath
+		}
+	}
+	return defaulted
+}
+
 func newPairReconciliations(
 	pairs krt.Collection[AgentTemplateHarnessPair],
 	agentTemplates krt.Collection[*kagentv1alpha3.AgentTemplate],
@@ -65,6 +118,8 @@ func newPairReconciliations(
 		}
 		revision, err := v2translator.NewCompiler(reader, map[v2translator.HarnessType]v2translator.HarnessCompiler{
 			v2translator.HarnessTypeKagent: kagenttranslator.NewCompiler(reader),
+			v2translator.HarnessTypeCodex:  codextranslator.NewCompiler(reader),
+			v2translator.HarnessTypeClaude: claudetranslator.NewCompiler(reader),
 		}).CompileAgentTemplate(context.Background(), pair.Harness, pair.AgentTemplate)
 		if err != nil {
 			condition, reason := kagentv1alpha3.AgentTemplateConditionResolvedRefs, "ReferenceResolutionFailed"
@@ -82,11 +137,13 @@ func newPairReconciliations(
 			return state
 		}
 
-		workerPool := &atev1alpha1.WorkerPool{}
-		workerKey := types.NamespacedName{Namespace: revision.Namespace, Name: revision.WorkerPoolName}
-		if err := reader.Get(context.Background(), workerKey, workerPool); err != nil {
-			state.Failure = &ReconciliationFailure{Condition: kagentv1alpha3.AgentTemplateConditionResolvedRefs, Reason: "WorkerPoolNotFound", Message: err.Error()}
-			return state
+		if revision.Placement == v2translator.RevisionPlacementKubernetesPod {
+			workerPool := &atev1alpha1.WorkerPool{}
+			workerKey := types.NamespacedName{Namespace: revision.Namespace, Name: revision.WorkerPoolName}
+			if err := reader.Get(context.Background(), workerKey, workerPool); err != nil {
+				state.Failure = &ReconciliationFailure{Condition: kagentv1alpha3.AgentTemplateConditionResolvedRefs, Reason: "WorkerPoolNotFound", Message: err.Error()}
+				return state
+			}
 		}
 		state.DesiredActorTemplate, err = substrate.ActorTemplateForRevision(revision, state.RevisionID)
 		if err != nil {
@@ -102,7 +159,7 @@ func newPairReconciliations(
 			return state
 		}
 		state.ObservedActorTemplate = (*observed).DeepCopy()
-		if !apiequality.Semantic.DeepEqual(state.ObservedActorTemplate.Spec, state.DesiredActorTemplate.Spec) {
+		if !actorTemplateSpecsEqual(state.ObservedActorTemplate.Spec, state.DesiredActorTemplate.Spec) {
 			state.Failure = &ReconciliationFailure{
 				Condition: kagentv1alpha3.AgentTemplateConditionReady,
 				Reason:    "ActorTemplateConflict",
@@ -246,10 +303,15 @@ func (r *Reconciler) reconcilePair(ctx context.Context, key string) error {
 	}
 
 	observed := state.ObservedActorTemplate
+	policy, err := json.Marshal(state.Revision.MCPPolicy)
+	if err != nil {
+		return fmt.Errorf("encode runtime revision MCP policy %s: %w", state.RevisionID, err)
+	}
 	revision := dbpkg.RuntimeRevision{
 		Revision: state.RevisionID.String(), Namespace: pair.Namespace, AgentTemplateName: pair.AgentTemplateName,
 		AgentTemplateUID: pair.AgentTemplateUID, HarnessName: pair.HarnessName, HarnessUID: pair.HarnessUID,
-		SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON,
+		Placement:      dbpkg.RuntimeRevisionPlacement(state.Revision.Placement),
+		SourceSnapshot: state.Revision.Provenance, AgentCard: state.Revision.AgentCardJSON, MCPPolicy: policy,
 		EgressDestinations:     state.Revision.EgressDestinations,
 		ActorTemplateNamespace: observed.Namespace, ActorTemplateName: observed.Name, ActorTemplateUID: string(observed.UID),
 		Phase: string(observed.Status.Phase), GoldenSnapshot: observed.Status.GoldenSnapshot,

@@ -2,8 +2,10 @@ package agentplugins
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/url"
@@ -15,37 +17,46 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/kagent-dev/kagent/go/api/adk"
+	"github.com/kagent-dev/kagent/go/api/agentplugin"
 	"github.com/kagent-dev/kagent/go/core/internal/skillsinit"
 )
 
 const (
-	DefaultPluginRoot = "/plugins"
-	DefaultSkillsRoot = "/skills"
-	DefaultDataRoot   = "/data/plugins"
-	maxPackageBytes   = 100 << 20
-	maxPackageEntries = 10_000
-	pluginSchema      = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-	mcpSchema         = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+	DefaultPluginRoot   = "/plugins"
+	DefaultSkillsRoot   = "/skills"
+	DefaultDataRoot     = "/data/plugins"
+	maxPackageBytes     = 100 << 20
+	maxPackageEntries   = 10_000
+	pluginSchema        = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+	mcpSchema           = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+	sourceMarkerVersion = 1
 )
 
 var pluginNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
 
-type Paths struct {
+// SkillPaths contains the package cache and selected-skill destinations shared
+// by Harness adapters.
+type SkillPaths struct {
 	Plugins string
 	Skills  string
-	Data    string
 }
 
-type MCPConfig struct {
+// ADKPaths adds the plugin data destination needed by ADK MCP servers.
+type ADKPaths struct {
+	SkillPaths
+	Data string
+}
+
+type mcpConfig struct {
 	HTTP  []adk.HttpMcpServerConfig
 	SSE   []adk.SseMcpServerConfig
 	Stdio []adk.StdioMcpServerConfig
 }
 
 // MaterializeAgentConfig materializes plugins independently for every agent.
-func MaterializeAgentConfig(ctx context.Context, config *adk.AgentConfig, paths Paths) error {
+func MaterializeAgentConfig(ctx context.Context, config *adk.AgentConfig, paths ADKPaths) error {
 	if config.AgentPlugins != nil {
-		plugins, err := Materialize(ctx, *config.AgentPlugins, paths)
+		plugins, err := materializeForADK(ctx, *config.AgentPlugins, paths)
 		if err != nil {
 			return err
 		}
@@ -56,10 +67,12 @@ func MaterializeAgentConfig(ctx context.Context, config *adk.AgentConfig, paths 
 	}
 	for i, child := range config.SubAgents {
 		childRoot := filepath.Join("subagents", fmt.Sprintf("%d", i))
-		if err := MaterializeAgentConfig(ctx, child, Paths{
-			Plugins: filepath.Join(paths.Plugins, childRoot),
-			Skills:  filepath.Join(paths.Skills, childRoot),
-			Data:    filepath.Join(paths.Data, childRoot),
+		if err := MaterializeAgentConfig(ctx, child, ADKPaths{
+			SkillPaths: SkillPaths{
+				Plugins: filepath.Join(paths.Plugins, childRoot),
+				Skills:  filepath.Join(paths.Skills, childRoot),
+			},
+			Data: filepath.Join(paths.Data, childRoot),
 		}); err != nil {
 			return fmt.Errorf("materialize sub-agent %q: %w", child.Name, err)
 		}
@@ -67,67 +80,108 @@ func MaterializeAgentConfig(ctx context.Context, config *adk.AgentConfig, paths 
 	return nil
 }
 
-func Materialize(ctx context.Context, config adk.AgentPluginConfig, paths Paths) (MCPConfig, error) {
-	selectedSkills := make([]string, 0, len(config.Skills))
-	for _, skill := range config.Skills {
-		selectedSkills = append(selectedSkills, skill.Name)
-	}
-	for _, plugin := range config.Plugins {
-		selectedSkills = append(selectedSkills, plugin.Skills...)
-	}
-	if err := validateSkillSelections(selectedSkills); err != nil {
-		return MCPConfig{}, err
-	}
+// MaterializeSkills materializes standalone and plugin-selected skills without
+// loading any plugin-provided MCP configuration. Runtimes that support only
+// Agent Skills should use this narrower entrypoint.
+func MaterializeSkills(ctx context.Context, resources agentplugin.Resources, paths SkillPaths) error {
+	_, err := materializeResources(ctx, resources, paths)
+	return err
+}
 
-	if err := os.MkdirAll(paths.Skills, 0o755); err != nil {
-		return MCPConfig{}, fmt.Errorf("create skills directory: %w", err)
-	}
-	if err := os.MkdirAll(paths.Plugins, 0o755); err != nil {
-		return MCPConfig{}, fmt.Errorf("create plugins directory: %w", err)
+// MaterializeExternalSkills uses anonymous OCI pulls so portable external-host
+// revisions cannot activate ambient Docker credentials or credential helpers.
+// The external compiler contract has already rejected Git, S3, and plugins.
+func MaterializeExternalSkills(ctx context.Context, resources agentplugin.Resources, paths SkillPaths) error {
+	_, err := materializeResourcesWithOptions(ctx, resources, paths, materializeOptions{anonymousOCI: true})
+	return err
+}
+
+func materializeForADK(ctx context.Context, resources agentplugin.Resources, paths ADKPaths) (mcpConfig, error) {
+	plugins, err := materializeResources(ctx, resources, paths.SkillPaths)
+	if err != nil {
+		return mcpConfig{}, err
 	}
 	if err := os.MkdirAll(paths.Data, 0o755); err != nil {
-		return MCPConfig{}, fmt.Errorf("create plugin data directory: %w", err)
+		return mcpConfig{}, fmt.Errorf("create plugin data directory: %w", err)
 	}
-
-	var result MCPConfig
-	for i, skill := range config.Skills {
-		root := filepath.Join(paths.Plugins, fmt.Sprintf("standalone-%d", i))
-		sourceRoot, err := fetchSource(ctx, skill.Source, root, "SKILL.md")
-		if err != nil {
-			return MCPConfig{}, fmt.Errorf("materialize skill %q: %w", skill.Name, err)
-		}
-		if err := copySkill(sourceRoot, filepath.Join(paths.Skills, skill.Name)); err != nil {
-			return MCPConfig{}, fmt.Errorf("materialize skill %q: %w", skill.Name, err)
-		}
-	}
-
-	pluginNames := make(map[string]struct{})
-	for i, plugin := range config.Plugins {
-		root := filepath.Join(paths.Plugins, fmt.Sprintf("plugin-%d", i))
-		pluginRoot, err := fetchSource(ctx, plugin.Source, root, "plugin.json")
-		if err != nil {
-			return MCPConfig{}, fmt.Errorf("materialize plugin %d: %w", i, err)
-		}
-		manifest, err := loadManifest(pluginRoot)
-		if err != nil {
-			return MCPConfig{}, fmt.Errorf("load plugin %d: %w", i, err)
-		}
-		if _, exists := pluginNames[manifest.Name]; exists {
-			return MCPConfig{}, fmt.Errorf("duplicate plugin name %q", manifest.Name)
-		}
-		pluginNames[manifest.Name] = struct{}{}
-		for _, name := range plugin.Skills {
-			source := filepath.Join(pluginRoot, "skills", name)
-			if err := copySkill(source, filepath.Join(paths.Skills, name)); err != nil {
-				return MCPConfig{}, fmt.Errorf("plugin %q skill %q: %w", manifest.Name, name, err)
-			}
-		}
-		mcp := loadMCP(ctx, pluginRoot, filepath.Join(paths.Data, manifest.Name))
+	var result mcpConfig
+	for _, plugin := range plugins {
+		mcp := loadMCP(ctx, plugin.root, filepath.Join(paths.Data, plugin.name))
 		result.HTTP = append(result.HTTP, mcp.HTTP...)
 		result.SSE = append(result.SSE, mcp.SSE...)
 		result.Stdio = append(result.Stdio, mcp.Stdio...)
 	}
 	return result, nil
+}
+
+type materializedPlugin struct {
+	name string
+	root string
+}
+
+func materializeResources(ctx context.Context, resources agentplugin.Resources, paths SkillPaths) ([]materializedPlugin, error) {
+	return materializeResourcesWithOptions(ctx, resources, paths, materializeOptions{})
+}
+
+type materializeOptions struct {
+	anonymousOCI bool
+}
+
+func materializeResourcesWithOptions(ctx context.Context, resources agentplugin.Resources, paths SkillPaths, options materializeOptions) ([]materializedPlugin, error) {
+	selectedSkills := make([]string, 0, len(resources.Skills))
+	for _, skill := range resources.Skills {
+		selectedSkills = append(selectedSkills, skill.Name)
+	}
+	for _, plugin := range resources.Plugins {
+		selectedSkills = append(selectedSkills, plugin.Skills...)
+	}
+	if err := validateSkillSelections(selectedSkills); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(paths.Skills, 0o755); err != nil {
+		return nil, fmt.Errorf("create skills directory: %w", err)
+	}
+	if err := os.MkdirAll(paths.Plugins, 0o755); err != nil {
+		return nil, fmt.Errorf("create plugins directory: %w", err)
+	}
+
+	for i, skill := range resources.Skills {
+		root := filepath.Join(paths.Plugins, fmt.Sprintf("standalone-%d", i))
+		sourceRoot, err := fetchSourceWithOptions(ctx, skill.Source, root, "SKILL.md", options)
+		if err != nil {
+			return nil, fmt.Errorf("materialize skill %q: %w", skill.Name, err)
+		}
+		if err := copySkill(sourceRoot, filepath.Join(paths.Skills, skill.Name)); err != nil {
+			return nil, fmt.Errorf("materialize skill %q: %w", skill.Name, err)
+		}
+	}
+
+	pluginNames := make(map[string]struct{})
+	plugins := make([]materializedPlugin, 0, len(resources.Plugins))
+	for i, plugin := range resources.Plugins {
+		root := filepath.Join(paths.Plugins, fmt.Sprintf("plugin-%d", i))
+		pluginRoot, err := fetchSourceWithOptions(ctx, plugin.Source, root, "plugin.json", options)
+		if err != nil {
+			return nil, fmt.Errorf("materialize plugin %d: %w", i, err)
+		}
+		manifest, err := loadManifest(pluginRoot)
+		if err != nil {
+			return nil, fmt.Errorf("load plugin %d: %w", i, err)
+		}
+		if _, exists := pluginNames[manifest.Name]; exists {
+			return nil, fmt.Errorf("duplicate plugin name %q", manifest.Name)
+		}
+		pluginNames[manifest.Name] = struct{}{}
+		for _, name := range plugin.Skills {
+			source := filepath.Join(pluginRoot, "skills", name)
+			if err := copySkill(source, filepath.Join(paths.Skills, name)); err != nil {
+				return nil, fmt.Errorf("plugin %q skill %q: %w", manifest.Name, name, err)
+			}
+		}
+		plugins = append(plugins, materializedPlugin{name: manifest.Name, root: pluginRoot})
+	}
+	return plugins, nil
 }
 
 func validateSkillSelections(names []string) error {
@@ -151,7 +205,11 @@ func validateSkillName(name string) error {
 	return nil
 }
 
-func fetchSource(ctx context.Context, source adk.AgentPluginSource, destination, requiredFile string) (string, error) {
+func fetchSource(ctx context.Context, source agentplugin.Source, destination, requiredFile string) (string, error) {
+	return fetchSourceWithOptions(ctx, source, destination, requiredFile, materializeOptions{})
+}
+
+func fetchSourceWithOptions(ctx context.Context, source agentplugin.Source, destination, requiredFile string, options materializeOptions) (string, error) {
 	selected := 0
 	if source.OCI != "" {
 		selected++
@@ -165,7 +223,15 @@ func fetchSource(ctx context.Context, source adk.AgentPluginSource, destination,
 	if selected != 1 {
 		return "", fmt.Errorf("exactly one artifact source is required")
 	}
+	identity, err := sourceIdentity(source)
+	if err != nil {
+		return "", err
+	}
+	marker := destination + ".source.json"
 	if _, err := os.Stat(destination); err == nil {
+		if err := requireSourceMarker(marker, identity); err != nil {
+			return "", err
+		}
 		if err := validatePackage(destination); err != nil {
 			return "", err
 		}
@@ -182,16 +248,24 @@ func fetchSource(ctx context.Context, source adk.AgentPluginSource, destination,
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := os.RemoveAll(destination); err != nil {
+	if _, err := os.Lstat(marker); err == nil {
+		return "", fmt.Errorf("cached artifact source marker exists without its package")
+	} else if !os.IsNotExist(err) {
 		return "", err
 	}
 	switch {
 	case source.OCI != "":
-		if err := skillsinit.FetchOCI(skillsinit.OCIRef{Image: source.OCI, Dest: destination}, false); err != nil {
+		fetch := skillsinit.FetchOCI
+		if options.anonymousOCI {
+			fetch = skillsinit.FetchOCIAnonymous
+		}
+		if err := fetch(skillsinit.OCIRef{Image: source.OCI, Dest: destination}, false); err != nil {
+			_ = os.RemoveAll(destination)
 			return "", err
 		}
 	case source.Git != nil:
 		if err := skillsinit.CloneGitCommit(source.Git.URL, source.Git.Commit, destination); err != nil {
+			_ = os.RemoveAll(destination)
 			return "", err
 		}
 	case source.S3 != nil:
@@ -200,19 +274,98 @@ func fetchSource(ctx context.Context, source adk.AgentPluginSource, destination,
 			Endpoint: source.S3.Endpoint, Region: source.S3.Region, VersionID: source.S3.VersionID,
 		}
 		if err := skillsinit.FetchS3(ctx, ref); err != nil {
+			_ = os.RemoveAll(destination)
 			return "", err
 		}
 	default:
 		return "", fmt.Errorf("artifact source is required")
 	}
 	if err := validatePackage(destination); err != nil {
+		_ = os.RemoveAll(destination)
 		return "", err
 	}
 	root, err := containedPath(destination, source.Path)
 	if err != nil {
+		_ = os.RemoveAll(destination)
 		return "", err
 	}
+	info, err := os.Stat(filepath.Join(root, requiredFile))
+	if err != nil || !info.Mode().IsRegular() {
+		_ = os.RemoveAll(destination)
+		return "", fmt.Errorf("%s is required", requiredFile)
+	}
+	if err := writeSourceMarker(marker, identity); err != nil {
+		_ = os.RemoveAll(destination)
+		return "", fmt.Errorf("commit artifact source marker: %w", err)
+	}
 	return root, nil
+}
+
+type sourceMarker struct {
+	Version int    `json:"version"`
+	Digest  string `json:"digest"`
+}
+
+func sourceIdentity(source agentplugin.Source) (string, error) {
+	raw, err := json.Marshal(source)
+	if err != nil {
+		return "", fmt.Errorf("encode artifact source identity: %w", err)
+	}
+	digest := sha256.Sum256(raw)
+	return fmt.Sprintf("sha256:%x", digest[:]), nil
+}
+
+func requireSourceMarker(path, identity string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("validate cached artifact source marker: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 1024 {
+		return fmt.Errorf("cached artifact source marker must be a private regular file")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read cached artifact source marker: %w", err)
+	}
+	var marker sourceMarker
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&marker); err != nil || marker.Version != sourceMarkerVersion || marker.Digest != identity {
+		return fmt.Errorf("cached artifact source marker does not match the requested immutable source")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("cached artifact source marker is invalid")
+	}
+	return nil
+}
+
+func writeSourceMarker(path, identity string) error {
+	raw, err := json.Marshal(sourceMarker{Version: sourceMarkerVersion, Digest: identity})
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".source-marker-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(raw); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func validatePackage(root string) error {
@@ -414,36 +567,36 @@ type mcpServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-func loadMCP(ctx context.Context, root, dataRoot string) MCPConfig {
+func loadMCP(ctx context.Context, root, dataRoot string) mcpConfig {
 	raw, err := os.ReadFile(filepath.Join(root, "mcp.json"))
 	if os.IsNotExist(err) {
-		return MCPConfig{}
+		return mcpConfig{}
 	}
 	log := logr.FromContextOrDiscard(ctx)
 	if err != nil {
 		log.Error(err, "Unable to read plugin MCP configuration", "pluginRoot", root)
-		return MCPConfig{}
+		return mcpConfig{}
 	}
 	var document mcpDocument
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
 		log.Error(err, "Invalid plugin MCP configuration", "pluginRoot", root)
-		return MCPConfig{}
+		return mcpConfig{}
 	}
 	if document.Schema != mcpSchema {
 		log.Error(fmt.Errorf("unsupported MCP schema %q", document.Schema), "Invalid plugin MCP configuration", "pluginRoot", root)
-		return MCPConfig{}
+		return mcpConfig{}
 	}
 	if document.Servers == nil {
 		log.Error(fmt.Errorf("mcpServers is required"), "Invalid plugin MCP configuration", "pluginRoot", root)
-		return MCPConfig{}
+		return mcpConfig{}
 	}
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		log.Error(err, "Unable to create plugin data directory", "pluginRoot", root)
-		return MCPConfig{}
+		return mcpConfig{}
 	}
-	var result MCPConfig
+	var result mcpConfig
 	names := make([]string, 0, len(document.Servers))
 	for name := range document.Servers {
 		names = append(names, name)

@@ -244,6 +244,9 @@ func (c *Compiler) translateModel(ctx context.Context, model *v1alpha3.ModelConf
 
 	switch model.Spec.Provider {
 	case v1alpha3.ModelProviderOpenAI:
+		if model.Spec.OpenAI != nil && model.Spec.OpenAI.ServiceTier != nil {
+			return nil, nil, v2translator.NewValidationError("serviceTier is supported only by the Codex Harness; the kagent runtime does not provide a common Responses API contract yet")
+		}
 		usingTokenExchange := model.Spec.OpenAI != nil && model.Spec.OpenAI.TokenExchange != nil
 		if !model.Spec.APIKeyPassthrough && !usingTokenExchange && model.Spec.APIKeySecret != "" {
 			modelDeploymentData.EnvVars = append(modelDeploymentData.EnvVars, corev1.EnvVar{

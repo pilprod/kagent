@@ -46,6 +46,29 @@ tests:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/kagent-dev/kagent/ui:v1.0.0
 
+  - it: should prefer an immutable UI digest over every tag
+    template: ui-deployment.yaml
+    set:
+      tag: "global-tag-must-not-render"
+      ui:
+        image:
+          tag: "component-tag-must-not-render"
+          digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/kagent-dev/kagent/ui@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+  - it: should reject a malformed UI digest
+    template: ui-deployment.yaml
+    set:
+      ui:
+        image:
+          digest: "sha256:not-a-digest"
+    asserts:
+      - failedTemplate:
+          errorMessage: "ui.image.digest must be a lowercase sha256 digest"
+
   - it: should have correct ui resources
     template: ui-deployment.yaml
     asserts:

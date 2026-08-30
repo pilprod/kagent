@@ -65,7 +65,9 @@ type HarnessSnapshotPolicy struct {
 	Location string `json:"location"`
 }
 
-// HarnessSubstratePolicy contains the Substrate policy shared by all runtime variants.
+// HarnessSubstratePolicy contains the Kubernetes-backed Substrate policy used
+// by the kagent runtime. External coding-agent runtimes select enrolled slots
+// internally and do not expose a generic worker provider in the public API.
 //
 // +kubebuilder:validation:XValidation:rule="self.workerPoolRef.name.size() > 0",message="workerPoolRef name must not be empty"
 type HarnessSubstratePolicy struct {
@@ -89,6 +91,7 @@ type HarnessAgentTemplateAdmission struct {
 // HarnessSpec defines a reusable runtime and its infrastructure policy.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.kagent) ? 1 : 0) + (has(self.codex) ? 1 : 0) + (has(self.claude) ? 1 : 0) == 1",message="exactly one of kagent, codex, or claude must be specified"
+// +kubebuilder:validation:XValidation:rule="has(self.kagent) == has(self.substrate)",message="substrate is required for kagent and forbidden for codex or claude"
 type HarnessSpec struct {
 	// +optional
 	Kagent *KagentHarness `json:"kagent,omitempty"`
@@ -108,8 +111,11 @@ type HarnessSpec struct {
 	// +listMapKey=name
 	Env []HarnessEnvVar `json:"env,omitempty"`
 
-	// +required
-	Substrate HarnessSubstratePolicy `json:"substrate"`
+	// Substrate configures Kubernetes-backed execution for the kagent runtime.
+	// It is required for kagent and forbidden for Codex and Claude, whose
+	// compilers select ExternalSlot placement.
+	// +optional
+	Substrate *HarnessSubstratePolicy `json:"substrate,omitempty"`
 
 	// AllowedAgentTemplates selects AgentTemplates this Harness admits.
 	// When omitted, the Harness admits none.

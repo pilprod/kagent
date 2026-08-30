@@ -1,0 +1,40 @@
+apiVersion: kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: codex
+  namespace: kagent-testbed
+spec:
+  codex: {}
+  workload:
+    image: "@@CODEX_HARNESS_IMAGE@@"
+  allowedAgentTemplates:
+    selector:
+      matchLabels:
+        kagent.dev/testbed-runtime: codex
+---
+apiVersion: kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: codex-subscription
+  namespace: kagent-testbed
+spec:
+  provider: OpenAI
+  model: gpt-5.4
+  openAI:
+    apiFormat: responses
+    reasoningEffort: high
+    serviceTier: fast
+---
+apiVersion: kagent.dev/v1alpha3
+kind: AgentTemplate
+metadata:
+  name: codex
+  namespace: kagent-testbed
+  labels:
+    kagent.dev/testbed-runtime: codex
+spec:
+  description: Codex running on an enrolled external host
+  modelConfig:
+    name: codex-subscription
+  systemPrompt: |
+    Work as a coding agent. Explain material changes and report verification results.

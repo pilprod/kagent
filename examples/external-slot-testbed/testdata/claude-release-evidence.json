@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 3,
+  "channel": "preview",
+  "tag": "v0.0.0-test.kap.1",
+  "source_repository": "https://github.com/pilprod/kagent",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "chart_source": {
+    "path": "helm/kagent",
+    "tree": "1111111111111111111111111111111111111111",
+    "skills_init_removal_commit": "059c01b68584dea113ccdf80f2e356c2d051e02a"
+  },
+  "image_refs": {
+    "controller": "ghcr.io/example/kagent/controller@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "ui": "ghcr.io/example/kagent/ui@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "runtime_images": {
+    "kagentHarness": "ghcr.io/example/kagent/golang-adk@sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "codexHarness": "ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "claudeHarness": "ghcr.io/example/kagent/claude-harness@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "charts": {
+    "application": {
+      "ref": "oci://ghcr.io/example/kagent/helm/kagent@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "version": "0.0.0-test.kap.1"
+    },
+    "crds": {
+      "ref": "oci://ghcr.io/example/kagent/helm/kagent-crds@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "version": "0.0.0-test.kap.1"
+    }
+  }
+}

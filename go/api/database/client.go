@@ -19,6 +19,8 @@ var ErrAgentInstanceTaskConflict = errors.New("AgentInstance already has an acti
 
 var ErrAgentInstanceNotQuiescent = errors.New("AgentInstance has no quiescent turn boundary")
 
+var ErrAgentInstanceSnapshotUnsupported = errors.New("AgentInstance runtime placement does not support snapshots")
+
 type LangGraphCheckpointTuple struct {
 	Checkpoint *LangGraphCheckpoint
 	Writes     []*LangGraphCheckpointWrite

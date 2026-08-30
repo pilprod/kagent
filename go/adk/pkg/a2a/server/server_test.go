@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"iter"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,6 +99,82 @@ func TestHTTPAndGRPCHealthSharePort(t *testing.T) {
 	}
 	if health.GetStatus() != grpc_health_v1.HealthCheckResponse_SERVING {
 		t.Errorf("gRPC health status = %s, want SERVING", health.GetStatus())
+	}
+}
+
+func TestInjectedReadinessUsesPrimaryListenerOnly(t *testing.T) {
+	const token = "private-readiness-token"
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	srv, err := NewA2AServer(a2atype.AgentCard{}, substrateExecutor{}, logr.Discard(), ServerConfig{
+		Port: "0", Listener: listener, DisableSeparateReadiness: true,
+		ReadyzHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("X-Test-Readiness", token)
+			response.WriteHeader(http.StatusNoContent)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.readyServer != nil {
+		t.Fatal("separate readiness listener was not disabled")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	response := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Test-Readiness") != token {
+		t.Fatalf("primary readiness = %d, %q", response.Code, response.Header().Get("X-Test-Readiness"))
+	}
+}
+
+func TestPrivateListenerConfigurationIsAtomic(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	readyz := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+
+	tests := map[string]ServerConfig{
+		"listener only":        {Port: "0", Listener: listener},
+		"handler only":         {Port: "0", ReadyzHandler: readyz},
+		"disable only":         {Port: "0", DisableSeparateReadiness: true},
+		"listener and handler": {Port: "0", Listener: listener, ReadyzHandler: readyz},
+		"listener and disable": {Port: "0", Listener: listener, DisableSeparateReadiness: true},
+		"handler and disable":  {Port: "0", ReadyzHandler: readyz, DisableSeparateReadiness: true},
+	}
+
+	for name, config := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewA2AServer(a2atype.AgentCard{}, substrateExecutor{}, logr.Discard(), config); err == nil {
+				t.Fatal("NewA2AServer accepted a partial private listener configuration")
+			}
+		})
+	}
+}
+
+func TestHTTPServersSetConnectionLimits(t *testing.T) {
+	srv, err := NewA2AServer(a2atype.AgentCard{}, substrateExecutor{}, logr.Discard(), ServerConfig{Port: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if srv.httpServer.ReadHeaderTimeout != defaultReadHeaderTimeout ||
+		srv.httpServer.IdleTimeout != defaultIdleTimeout ||
+		srv.httpServer.MaxHeaderBytes != defaultMaxHeaderBytes {
+		t.Fatalf("primary limits = (%s, %s, %d)", srv.httpServer.ReadHeaderTimeout, srv.httpServer.IdleTimeout, srv.httpServer.MaxHeaderBytes)
+	}
+	if srv.readyServer == nil {
+		t.Fatal("separate readiness server is missing")
+	}
+	if srv.readyServer.ReadHeaderTimeout != readinessReadHeaderTimeout ||
+		srv.readyServer.IdleTimeout != readinessIdleTimeout ||
+		srv.readyServer.MaxHeaderBytes != readinessMaxHeaderBytes {
+		t.Fatalf("readiness limits = (%s, %s, %d)", srv.readyServer.ReadHeaderTimeout, srv.readyServer.IdleTimeout, srv.readyServer.MaxHeaderBytes)
 	}
 }
 

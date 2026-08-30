@@ -749,10 +749,18 @@ spec:
                     - high
                     - xhigh
                     - max
+                    - ultra
                     type: string
                   seed:
                     description: Seed value
                     type: integer
+                  serviceTier:
+                    description: |-
+                      ServiceTier selects expedited processing for Responses API requests.
+                      Omit this field for normal/default processing.
+                    enum:
+                    - fast
+                    type: string
                   temperature:
                     description: Temperature for sampling
                     type: string
@@ -791,6 +799,9 @@ spec:
                 x-kubernetes-validations:
                 - message: maxTokens and maxCompletionTokens are mutually exclusive
                   rule: '!(has(self.maxTokens) && has(self.maxCompletionTokens))'
+                - message: serviceTier is only supported with apiFormat responses
+                  rule: '!has(self.serviceTier) || (has(self.apiFormat) && self.apiFormat
+                    == ''responses'')'
               provider:
                 default: OpenAI
                 description: The provider of the model
@@ -1402,10 +1413,19 @@ spec:
                     - medium
                     - high
                     - xhigh
+                    - max
+                    - ultra
                     type: string
                   seed:
                     description: Seed value
                     type: integer
+                  serviceTier:
+                    description: |-
+                      ServiceTier selects expedited processing for Responses API requests.
+                      Omit this field for normal/default processing.
+                    enum:
+                    - fast
+                    type: string
                   temperature:
                     description: Temperature for sampling
                     type: string
@@ -1444,6 +1464,9 @@ spec:
                 x-kubernetes-validations:
                 - message: maxTokens and maxCompletionTokens are mutually exclusive
                   rule: '!(has(self.maxTokens) && has(self.maxCompletionTokens))'
+                - message: serviceTier is only supported with apiFormat responses
+                  rule: '!has(self.serviceTier) || (has(self.apiFormat) && self.apiFormat
+                    == ''responses'')'
               provider:
                 default: OpenAI
                 description: The provider of the model

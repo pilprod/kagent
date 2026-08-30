@@ -55,8 +55,9 @@ type ResolvedAgentBinding struct {
 
 // HarnessInput contains the Kubernetes inputs needed by a harness compiler.
 type HarnessInput struct {
-	Harness *v1alpha3.Harness
-	Root    *AgentInput
+	Harness   *v1alpha3.Harness
+	Root      *AgentInput
+	MCPPolicy MCPPolicyV1
 }
 
 // AgentInput contains resolved Kubernetes inputs for one agent.
@@ -101,7 +102,26 @@ func (c *Compiler) CompileAgentTemplate(ctx context.Context, harness *v1alpha3.H
 	if err != nil {
 		return nil, err
 	}
-	return harnessCompiler.Compile(ctx, input)
+	policy, err := buildMCPPolicy(input)
+	if err != nil {
+		return nil, err
+	}
+	// Harness compilers receive their own deep copy. They may retain the input,
+	// so sharing slice storage here would make the returned private policy
+	// mutable after its revision digest was calculated.
+	input.MCPPolicy = cloneMCPPolicy(policy)
+	revision, err := harnessCompiler.Compile(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	if revision == nil {
+		return nil, fmt.Errorf("harness compiler returned no runtime revision")
+	}
+	if err := policy.Validate(); err != nil {
+		return nil, fmt.Errorf("validate private MCP policy after harness compilation: %w", err)
+	}
+	revision.MCPPolicy = cloneMCPPolicy(policy)
+	return revision, nil
 }
 
 func harnessType(harness *v1alpha3.Harness) HarnessType {
