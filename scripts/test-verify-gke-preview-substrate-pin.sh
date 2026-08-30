@@ -36,7 +36,17 @@ expect_failure() {
 test -x "${verifier}" || fail "verifier is not executable"
 test -f "${pin_file}" || fail "pin manifest does not exist"
 
-expect_failure "pin manifest is intentionally blocked" "${pin_file}"
+jq -e '.status == "ready" and (.blocker | not)' "${pin_file}" >/dev/null ||
+  fail "published pin manifest must be ready and contain no blocker"
+
+blocked_candidate="${tmp_dir}/blocked.json"
+jq '
+  .status = "blocked" |
+  .blocker = "immutable public Go checksums are pending" |
+  .goModule.replacement.sum = null |
+  .goModule.replacement.goModSum = null
+' "${pin_file}" >"${blocked_candidate}"
+expect_failure "pin manifest is intentionally blocked" "${blocked_candidate}"
 
 declare -a mutations=(
   '.requiredCapabilities[1] = "pkg/api/v1alpha1.WorkerProviderContainer"'

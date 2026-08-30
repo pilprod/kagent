@@ -37,16 +37,19 @@ if [[ "${pin_status}" == "blocked" ]]; then
     (.requiredCapabilities | type == "array" and length > 0) and
     (.lastIncompatiblePublicRelease.goModuleVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
     (.lastIncompatiblePublicRelease.helmChartVersion | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    .goModule.replacement.version == null and
+    (.goModule.replacement.version | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
     .goModule.replacement.sum == null and
     .goModule.replacement.goModSum == null and
-    .goModule.origin.commit == null and
-    .goModule.origin.ref == null and
-    .helmChart.version == null and
-    .helmChart.appVersion == null and
-    .helmChart.registryDigest == null and
-    .helmChart.packageSha256 == null
-  ' "${pin_file}" >/dev/null || fail "blocked pin manifest must not contain invented immutable references"
+    (.goModule.origin.commit | test("^[0-9a-f]{40}$")) and
+    (.goModule.origin.ref | test("^refs/tags/v")) and
+    (.helmChart.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+    (.helmChart.appVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+    (.helmChart.registryDigest | test("^sha256:[0-9a-f]{64}$")) and
+    (.helmChart.packageSha256 | test("^sha256:[0-9a-f]{64}$")) and
+    .goModule.replacement.version == ("v" + .helmChart.version) and
+    .goModule.origin.ref == ("refs/tags/" + .goModule.replacement.version) and
+    .helmChart.appVersion == .goModule.replacement.version
+  ' "${pin_file}" >/dev/null || fail "blocked pin manifest must contain coherent known references and null pending Go checksums"
   fail "pin manifest is intentionally blocked: $(jq -er '.blocker' "${pin_file}")"
 fi
 

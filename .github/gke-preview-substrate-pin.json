@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
-  "status": "blocked",
-  "blocker": "The immutable pilprod/substrate v0.0.22 Go module and matching Helm chart have not yet been published and verified for the ExternalSlot WorkerProvider and OpenActorIngress APIs required by this kagent branch.",
+  "status": "ready",
   "requiredCapabilities": [
     "pkg/api/v1alpha1.ActorTemplateSpec.WorkerProvider",
     "pkg/api/v1alpha1.WorkerProviderExternalSlot",
@@ -16,23 +15,23 @@
     "requiredPath": "github.com/agent-substrate/substrate",
     "replacement": {
       "path": "github.com/pilprod/substrate",
-      "version": null,
-      "sum": null,
-      "goModSum": null
+      "version": "v0.0.22",
+      "sum": "h1:1XnVr5sb0rpPN1DQTocRy3M32LqyCiQPoSFa5POwAZE=",
+      "goModSum": "h1:QLa0gzultJKhNXefqAJ9ksS8KAcheSElVoq0+3ETMuQ="
     },
     "origin": {
       "vcs": "git",
       "url": "https://github.com/pilprod/substrate",
-      "commit": null,
-      "ref": null
+      "commit": "e9ed68e587b56df2aa2a7f0267a744598c4d48b4",
+      "ref": "refs/tags/v0.0.22"
     }
   },
   "helmChart": {
     "repository": "oci://ghcr.io/pilprod/substrate/helm",
     "name": "substrate",
-    "version": null,
-    "appVersion": null,
-    "registryDigest": null,
-    "packageSha256": null
+    "version": "0.0.22",
+    "appVersion": "v0.0.22",
+    "registryDigest": "sha256:bb166a3170cfa5e9ea655497d2e255fc0fa68cf5476f46b9ec25332c9cd1a49a",
+    "packageSha256": "sha256:817cfea953b84ba56f96f0dc4d0646894f12bf38de60de495b7d28cd45c30ddf"
   }
 }

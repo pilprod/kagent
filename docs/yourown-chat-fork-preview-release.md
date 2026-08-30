@@ -15,8 +15,8 @@ explicitly satisfied.
 1. `.github/gke-preview-substrate-pin.json` has `status: ready` and identifies
    the exact public `github.com/pilprod/substrate` v0.0.22 Go module release
    plus the matching `oci://ghcr.io/pilprod/substrate/helm/substrate` chart.
-   The manifest is intentionally blocked while the last public release lacks
-   `ExternalSlot` and `OpenActorIngress`; null pin fields must not be invented.
+   The manifest is ready only after the public Go proxy, checksum database,
+   immutable source tag, and matching OCI chart have all been verified.
 2. Both kagent and the Local Agent Host use that exact immutable public
    Substrate version. Local `go.work` files, filesystem replacements, private
    proxies, and fork substitutions are development-only and forbidden in

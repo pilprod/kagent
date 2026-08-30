@@ -169,8 +169,8 @@ KMCP_VERSION ?= $(shell $(AWK) '/github\.com\/kagent-dev\/kmcp/ { print substr($
 
 # Substrate
 SUBSTRATE_ENABLED ?= false
-SUBSTRATE_VERSION ?= $(shell $(AWK) '/github\.com\/kagent-dev\/substrate/ { print substr($$5, 2) }' go/go.mod) # Substrate version defaults to the replace target in go.mod
-SUBSTRATE_REPO ?= oci://ghcr.io/kagent-dev/substrate/helm # Override for local dev when consuming a locally-published chart, e.g. oci://localhost:5001/kagent-dev/substrate/helm
+SUBSTRATE_VERSION ?= $(shell $(AWK) '/github\.com\/pilprod\/substrate/ { print substr($$5, 2) }' go/go.mod) # Substrate version defaults to the replace target in go.mod
+SUBSTRATE_REPO ?= oci://ghcr.io/pilprod/substrate/helm # Override for local dev when consuming a locally-published chart, e.g. oci://localhost:5001/pilprod/substrate/helm
 
 HELM_ACTION=upgrade --install
 
