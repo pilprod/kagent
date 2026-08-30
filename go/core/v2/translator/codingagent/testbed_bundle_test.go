@@ -102,7 +102,56 @@ func TestExternalSlotTestbedStandardEvidenceKeepsClaudeTermsGateClosed(t *testin
 	command := exec.Command(renderer, "claude", evidence)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
-	require.Contains(t, string(output), "does not contain images.claudeHarness")
+	require.Contains(t, string(output), "does not contain runtime_images.claudeHarness")
+}
+
+func TestExternalSlotTestbedEvidenceSeparatesDeploymentAndRuntimeImages(t *testing.T) {
+	repositoryRoot := testRepositoryRoot(t)
+	raw, err := os.ReadFile(filepath.Join(
+		repositoryRoot,
+		"examples",
+		"external-slot-testbed",
+		"testdata",
+		"release-evidence.json",
+	))
+	require.NoError(t, err)
+
+	var evidence struct {
+		SchemaVersion    int    `json:"schemaVersion"`
+		SourceRepository string `json:"source_repository"`
+		SourceCommit     string `json:"source_commit"`
+		ChartSource      struct {
+			Path                    string `json:"path"`
+			Tree                    string `json:"tree"`
+			SkillsInitRemovalCommit string `json:"skills_init_removal_commit"`
+		} `json:"chart_source"`
+		ImageRefs     map[string]string `json:"image_refs"`
+		RuntimeImages map[string]string `json:"runtime_images"`
+		Charts        map[string]struct {
+			Ref     string `json:"ref"`
+			Version string `json:"version"`
+		} `json:"charts"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &evidence))
+	require.Equal(t, 2, evidence.SchemaVersion)
+	require.Equal(t, "https://github.com/pilprod/kagent", evidence.SourceRepository)
+	require.Regexp(t, `^[0-9a-f]{40}$`, evidence.SourceCommit)
+	require.Equal(t, "helm/kagent", evidence.ChartSource.Path)
+	require.Regexp(t, `^[0-9a-f]{40}$`, evidence.ChartSource.Tree)
+	require.Equal(t, "059c01b68584dea113ccdf80f2e356c2d051e02a", evidence.ChartSource.SkillsInitRemovalCommit)
+	require.Len(t, evidence.ImageRefs, 3)
+	for _, key := range []string{"controller", "ui", "agent"} {
+		require.Regexp(t, `^[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.ImageRefs[key])
+	}
+	require.NotContains(t, evidence.ImageRefs, "codexHarness")
+	require.Len(t, evidence.RuntimeImages, 1)
+	require.Regexp(t, `^[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.RuntimeImages["codexHarness"])
+	require.NotContains(t, evidence.RuntimeImages, "claudeHarness")
+	require.Len(t, evidence.Charts, 2)
+	for _, key := range []string{"application", "crds"} {
+		require.Regexp(t, `^oci://[^[:space:]@]+@sha256:[0-9a-f]{64}$`, evidence.Charts[key].Ref)
+		require.Regexp(t, `^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+\.kap\.[0-9]+$`, evidence.Charts[key].Version)
+	}
 }
 
 func TestExternalSlotTestbedRendererRejectsUnpinnedOrMissingImages(t *testing.T) {
@@ -115,18 +164,18 @@ func TestExternalSlotTestbedRendererRejectsUnpinnedOrMissingImages(t *testing.T)
 	}{
 		{
 			name:     "mutable tag",
-			evidence: `{"schemaVersion":1,"images":{"codexHarness":"ghcr.io/example/kagent/codex-harness:latest"}}`,
+			evidence: `{"schemaVersion":2,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness:latest"}}`,
 			want:     "is not digest-qualified",
 		},
 		{
 			name:     "missing image",
-			evidence: `{"schemaVersion":1,"images":{}}`,
-			want:     "does not contain images.codexHarness",
+			evidence: `{"schemaVersion":2,"runtime_images":{}}`,
+			want:     "does not contain runtime_images.codexHarness",
 		},
 		{
 			name:     "unknown schema",
-			evidence: `{"schemaVersion":2,"images":{"codexHarness":"ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
-			want:     "must use schemaVersion 1",
+			evidence: `{"schemaVersion":1,"runtime_images":{"codexHarness":"ghcr.io/example/kagent/codex-harness@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
+			want:     "must use schemaVersion 2",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

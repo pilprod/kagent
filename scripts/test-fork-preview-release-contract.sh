@@ -36,12 +36,18 @@ required_workflow_fragments = (
     '"golang-adk:${agent}"',
     '--arg agent "ghcr.io/${owner}/kagent/golang-adk@${agent}"',
     'agent: $agent',
-    '--arg sourceRepository "https://github.com/${GITHUB_REPOSITORY}"',
+    '--arg source_repository "https://github.com/${GITHUB_REPOSITORY}"',
     'chart_source_tree="$(git rev-parse "${GITHUB_SHA}:helm/kagent")"',
     'path: "helm/kagent"',
-    'tree: $chartSourceTree',
-    '--arg skillsInitRemovalCommit "059c01b68584dea113ccdf80f2e356c2d051e02a"',
-    'skillsInitRemovalCommit: $skillsInitRemovalCommit',
+    'tree: $chart_source_tree',
+    '--arg skills_init_removal_commit "059c01b68584dea113ccdf80f2e356c2d051e02a"',
+    'skills_init_removal_commit: $skills_init_removal_commit',
+    'image_refs: {',
+    'runtime_images: {',
+    'application: {',
+    'crds: {',
+    'ref: $application_chart',
+    'ref: $crds_chart',
 )
 for fragment in required_workflow_fragments:
     if fragment not in workflow:

@@ -512,47 +512,64 @@ jobs:
             [[ "${actual}" == "${expected}" ]]
           done
           jq -n \
-            --arg schemaVersion "1" \
+            --arg schemaVersion "2" \
             --arg tag "${GITHUB_REF_NAME}" \
-            --arg sourceRepository "https://github.com/${GITHUB_REPOSITORY}" \
-            --arg sourceCommit "${GITHUB_SHA}" \
-            --arg chartSourceTree "${chart_source_tree}" \
-            --arg skillsInitRemovalCommit "059c01b68584dea113ccdf80f2e356c2d051e02a" \
+            --arg source_repository "https://github.com/${GITHUB_REPOSITORY}" \
+            --arg source_commit "${GITHUB_SHA}" \
+            --arg chart_source_tree "${chart_source_tree}" \
+            --arg skills_init_removal_commit "059c01b68584dea113ccdf80f2e356c2d051e02a" \
+            --arg chart_version "${version}" \
             --arg controller "ghcr.io/${owner}/kagent/controller@${controller}" \
             --arg ui "ghcr.io/${owner}/kagent/ui@${ui}" \
             --arg agent "ghcr.io/${owner}/kagent/golang-adk@${agent}" \
             --arg codexHarness "ghcr.io/${owner}/kagent/codex-harness@${codex}" \
-            --arg kagentChart "ghcr.io/${owner}/kagent/helm/kagent@${chart}" \
-            --arg crdsChart "ghcr.io/${owner}/kagent/helm/kagent-crds@${crds}" \
+            --arg application_chart "oci://ghcr.io/${owner}/kagent/helm/kagent@${chart}" \
+            --arg crds_chart "oci://ghcr.io/${owner}/kagent/helm/kagent-crds@${crds}" \
             '{
               schemaVersion: ($schemaVersion | tonumber),
               channel: "preview",
               tag: $tag,
-              sourceRepository: $sourceRepository,
-              sourceCommit: $sourceCommit,
-              chartSource: {
+              source_repository: $source_repository,
+              source_commit: $source_commit,
+              chart_source: {
                 path: "helm/kagent",
-                tree: $chartSourceTree,
-                skillsInitRemovalCommit: $skillsInitRemovalCommit
+                tree: $chart_source_tree,
+                skills_init_removal_commit: $skills_init_removal_commit
               },
-              images: {
+              image_refs: {
                 controller: $controller,
                 ui: $ui,
-                agent: $agent,
+                agent: $agent
+              },
+              runtime_images: {
                 codexHarness: $codexHarness
               },
               charts: {
-                kagent: $kagentChart,
-                kagentCRDs: $crdsChart
+                application: {
+                  ref: $application_chart,
+                  version: $chart_version
+                },
+                crds: {
+                  ref: $crds_chart,
+                  version: $chart_version
+                }
               }
             }' > release-evidence.json
-          jq -e '
-            .sourceRepository == "https://github.com/pilprod/kagent" and
-            .chartSource.path == "helm/kagent" and
-            (.chartSource.tree | test("^[0-9a-f]{40}$")) and
-            .chartSource.skillsInitRemovalCommit == "059c01b68584dea113ccdf80f2e356c2d051e02a" and
-            (.images | keys == ["agent", "codexHarness", "controller", "ui"]) and
-            (.images | has("claudeHarness") | not)
+          jq -e --arg version "${version}" '
+            .schemaVersion == 2 and
+            .source_repository == "https://github.com/pilprod/kagent" and
+            (.source_commit | test("^[0-9a-f]{40}$")) and
+            .chart_source.path == "helm/kagent" and
+            (.chart_source.tree | test("^[0-9a-f]{40}$")) and
+            .chart_source.skills_init_removal_commit == "059c01b68584dea113ccdf80f2e356c2d051e02a" and
+            (.image_refs | keys == ["agent", "controller", "ui"]) and
+            (.runtime_images | keys == ["codexHarness"]) and
+            (.runtime_images | has("claudeHarness") | not) and
+            (.charts | keys == ["application", "crds"]) and
+            .charts.application.version == $version and
+            .charts.crds.version == $version and
+            (.charts.application.ref | test("^oci://ghcr.io/pilprod/kagent/helm/kagent@sha256:[0-9a-f]{64}$")) and
+            (.charts.crds.ref | test("^oci://ghcr.io/pilprod/kagent/helm/kagent-crds@sha256:[0-9a-f]{64}$"))
           ' release-evidence.json >/dev/null
           sha256sum release-evidence.json > release-evidence.json.sha256
 

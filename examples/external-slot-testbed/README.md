@@ -24,10 +24,12 @@ kubectl apply -f /tmp/kagent-testbed-codex.yaml
 ```
 
 Use `claude` instead of `codex` only with release evidence containing a
-digest-qualified `images.claudeHarness` field. The fork preview release does
-not publish a Claude-enabled image until the Anthropic Commercial Terms gate
-has been explicitly satisfied; do not replace that missing evidence with a
-mutable tag or an unrecorded local build.
+digest-qualified `runtime_images.claudeHarness` field. Runtime harness images
+are deliberately separate from the deployment-ready `image_refs` map, so
+publishing evidence cannot auto-activate them in the kagent chart. The fork
+preview release does not publish a Claude-enabled image until the Anthropic
+Commercial Terms gate has been explicitly satisfied; do not replace that
+missing evidence with a mutable tag or an unrecorded local build.
 
 After applying, wait until the selected `AgentTemplate` reports `Ready=True`
 for its Harness before creating an `AgentInstance` through Kagent. Temporal and

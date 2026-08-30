@@ -66,13 +66,17 @@ The resulting prerelease contains:
 - `SHA256SUMS`, provenance attestations, and `release-evidence.json`.
 
 The declarative runtime is published as `golang-adk` and recorded under the
-consumer-facing `images.agent` key used for `controller.agentImage`. The
-evidence also records the exact repository, source commit, and `helm/kagent`
-Git tree. Its chart-source contract proves that upstream commit
+consumer-facing `image_refs.agent` key used for `controller.agentImage`.
+`image_refs` contains exactly `controller`, `ui`, and `agent`; Codex remains
+separate under `runtime_images.codexHarness` and is not activated by installing
+the chart. The application and CRD chart entries carry explicit versions and
+digest-qualified `oci://` references. The evidence also records the exact
+`source_repository`, `source_commit`, and `helm/kagent` Git tree. Its
+chart-source contract proves that upstream commit
 `059c01b68584dea113ccdf80f2e356c2d051e02a` removed the obsolete
 `controller.skillsInitImage` value and `skills-init` container; neither is
 reintroduced by this fork. `release-evidence.json` intentionally has no
-`claudeHarness` image entry.
+`runtime_images.claudeHarness` entry.
 
 ## 3. Publish the Local Agent Host
 

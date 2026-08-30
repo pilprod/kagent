@@ -33,18 +33,18 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-schema_version="$(jq -er '.schemaVersion | select(. == 1)' "${evidence}")" || {
-  printf 'release evidence must use schemaVersion 1\n' >&2
+schema_version="$(jq -er '.schemaVersion | select(. == 2)' "${evidence}")" || {
+  printf 'release evidence must use schemaVersion 2\n' >&2
   exit 1
 }
-[[ "${schema_version}" == "1" ]]
+[[ "${schema_version}" == "2" ]]
 
-image="$(jq -er --arg key "${evidence_key}" '.images[$key] | strings | select(length > 0)' "${evidence}")" || {
-  printf 'release evidence does not contain images.%s\n' "${evidence_key}" >&2
+image="$(jq -er --arg key "${evidence_key}" '.runtime_images[$key] | strings | select(length > 0)' "${evidence}")" || {
+  printf 'release evidence does not contain runtime_images.%s\n' "${evidence_key}" >&2
   exit 1
 }
 if [[ ! "${image}" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
-  printf 'release evidence images.%s is not digest-qualified: %s\n' "${evidence_key}" "${image}" >&2
+  printf 'release evidence runtime_images.%s is not digest-qualified: %s\n' "${evidence_key}" "${image}" >&2
   exit 1
 fi
 
