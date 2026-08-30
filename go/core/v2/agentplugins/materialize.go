@@ -42,7 +42,43 @@ type MCPConfig struct {
 	Stdio []adk.StdioMcpServerConfig
 }
 
+// MaterializeAgentConfig materializes plugins independently for every agent.
+func MaterializeAgentConfig(ctx context.Context, config *adk.AgentConfig, paths Paths) error {
+	if config.AgentPlugins != nil {
+		plugins, err := Materialize(ctx, *config.AgentPlugins, paths)
+		if err != nil {
+			return err
+		}
+		config.HttpTools = append(config.HttpTools, plugins.HTTP...)
+		config.SseTools = append(config.SseTools, plugins.SSE...)
+		config.StdioTools = append(config.StdioTools, plugins.Stdio...)
+		config.SkillsDirectory = paths.Skills
+	}
+	for i, child := range config.SubAgents {
+		childRoot := filepath.Join("subagents", fmt.Sprintf("%d", i))
+		if err := MaterializeAgentConfig(ctx, child, Paths{
+			Plugins: filepath.Join(paths.Plugins, childRoot),
+			Skills:  filepath.Join(paths.Skills, childRoot),
+			Data:    filepath.Join(paths.Data, childRoot),
+		}); err != nil {
+			return fmt.Errorf("materialize sub-agent %q: %w", child.Name, err)
+		}
+	}
+	return nil
+}
+
 func Materialize(ctx context.Context, config adk.AgentPluginConfig, paths Paths) (MCPConfig, error) {
+	selectedSkills := make([]string, 0, len(config.Skills))
+	for _, skill := range config.Skills {
+		selectedSkills = append(selectedSkills, skill.Name)
+	}
+	for _, plugin := range config.Plugins {
+		selectedSkills = append(selectedSkills, plugin.Skills...)
+	}
+	if err := validateSkillSelections(selectedSkills); err != nil {
+		return MCPConfig{}, err
+	}
+
 	if err := os.MkdirAll(paths.Skills, 0o755); err != nil {
 		return MCPConfig{}, fmt.Errorf("create skills directory: %w", err)
 	}
@@ -92,6 +128,27 @@ func Materialize(ctx context.Context, config adk.AgentPluginConfig, paths Paths)
 		result.Stdio = append(result.Stdio, mcp.Stdio...)
 	}
 	return result, nil
+}
+
+func validateSkillSelections(names []string) error {
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if err := validateSkillName(name); err != nil {
+			return err
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("duplicate skill name %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+func validateSkillName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\\`) {
+		return fmt.Errorf("skill name %q must be a single relative path component", name)
+	}
+	return nil
 }
 
 func fetchSource(ctx context.Context, source adk.AgentPluginSource, destination, requiredFile string) (string, error) {
@@ -216,8 +273,22 @@ func containedPath(root, relative string) (string, error) {
 }
 
 func pathWithin(root, path string) bool {
-	relative, err := filepath.Rel(root, path)
+	root = canonicalPath(root)
+	path = canonicalPath(path)
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func canonicalPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path
+	}
+	return filepath.Join(canonicalPath(parent), filepath.Base(path))
 }
 
 func copySkill(source, destination string) error {

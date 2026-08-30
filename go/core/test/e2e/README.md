@@ -28,10 +28,15 @@ host and translates its listener to the host address reachable from the
 cluster (`172.17.0.1` on Linux and `host.docker.internal` on macOS). Set
 `KAGENT_LOCAL_HOST` when the cluster uses a different host address.
 
+`TestMCPInteraction` starts `mockmcp` on the same reachable host, registers it
+as a `RemoteMCPServer`, and verifies an actual `tools/call` request.
+
+The `TestMCPAgentInstanceInteraction`, `TestMCPAskUserContinuation`, and
+`TestMCPCancelTask` cases exercise the controller's public `/mcp` endpoint on
+port 8083, including MCP Tasks polling, synchronous fallback, A2A task identity,
+input continuation, and cancellation.
+
 `mocks/` contains the deterministic LLM responses used by interaction tests.
-`manifests/everything-mcp-server.yaml` retains the deterministic MCP server
-fixture; its legacy Kubernetes wrapper will be replaced when the new
-RemoteMCPServer interaction test is added.
 
 For local interaction debugging, start any retained response fixture from the
 `go` directory:
