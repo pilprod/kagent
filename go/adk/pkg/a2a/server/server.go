@@ -26,8 +26,14 @@ import (
 )
 
 const (
-	a2aMaxContentLengthEnvVar = "A2A_MAX_CONTENT_LENGTH"
-	defaultMaxContentLength   = int64(10 * 1024 * 1024)
+	a2aMaxContentLengthEnvVar  = "A2A_MAX_CONTENT_LENGTH"
+	defaultMaxContentLength    = int64(10 * 1024 * 1024)
+	defaultReadHeaderTimeout   = 5 * time.Second
+	defaultIdleTimeout         = 2 * time.Minute
+	defaultMaxHeaderBytes      = 64 << 10
+	readinessReadHeaderTimeout = 2 * time.Second
+	readinessIdleTimeout       = 30 * time.Second
+	readinessMaxHeaderBytes    = 8 << 10
 )
 
 // ServerConfig holds configuration for the A2A server.
@@ -35,6 +41,15 @@ type ServerConfig struct {
 	Host            string
 	Port            string
 	ShutdownTimeout time.Duration
+	// Listener optionally supplies an already-bound listener. It is used by
+	// execution providers that authenticate a connection before HTTP or h2c
+	// bytes reach the A2A server.
+	Listener net.Listener
+	// ReadyzHandler, when set, is served on /readyz on the primary listener.
+	ReadyzHandler http.Handler
+	// DisableSeparateReadiness disables the Kubernetes-style :8081 readiness
+	// listener. In-cluster callers leave this false and retain the default.
+	DisableSeparateReadiness bool
 }
 
 // A2AServer wraps the A2A server with health endpoints and graceful shutdown.
@@ -45,11 +60,26 @@ type A2AServer struct {
 	healthServer *health.Server
 	logger       logr.Logger
 	config       ServerConfig
+	listener     net.Listener
 	listenErr    chan error
 }
 
 // NewA2AServer creates a new A2A server using a2asrv.
 func NewA2AServer(agentCard a2atype.AgentCard, executor a2asrv.AgentExecutor, logger logr.Logger, config ServerConfig, handlerOpts ...a2asrv.RequestHandlerOption) (*A2AServer, error) {
+	privateListenerFields := 0
+	if config.Listener != nil {
+		privateListenerFields++
+	}
+	if config.ReadyzHandler != nil {
+		privateListenerFields++
+	}
+	if config.DisableSeparateReadiness {
+		privateListenerFields++
+	}
+	if privateListenerFields != 0 && privateListenerFields != 3 {
+		return nil, fmt.Errorf("private listener mode requires Listener, ReadyzHandler, and DisableSeparateReadiness together")
+	}
+
 	requestHandler := a2asrv.NewHandler(executor, handlerOpts...)
 	jsonrpcHandler := a2asrv.NewJSONRPCHandler(requestHandler)
 	if maxContentLength := getMaxContentLength(logger); maxContentLength != nil {
@@ -58,6 +88,9 @@ func NewA2AServer(agentCard a2atype.AgentCard, executor a2asrv.AgentExecutor, lo
 
 	mux := http.NewServeMux()
 	RegisterHealthEndpoints(mux)
+	if config.ReadyzHandler != nil {
+		mux.Handle("/readyz", config.ReadyzHandler)
+	}
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(&agentCard))
 	mux.Handle("/", jsonrpcHandler)
 
@@ -79,7 +112,7 @@ func NewA2AServer(agentCard a2atype.AgentCard, executor a2asrv.AgentExecutor, lo
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/grpc.health.v1.Health/"):
 			return false
-		case r.URL.Path == "/health", r.URL.Path == "/healthz", r.URL.Path == a2asrv.WellKnownAgentCardPath:
+		case r.URL.Path == "/health", r.URL.Path == "/healthz", r.URL.Path == "/readyz", r.URL.Path == a2asrv.WellKnownAgentCardPath:
 			return false
 		default:
 			return true
@@ -124,24 +157,37 @@ func NewA2AServer(agentCard a2atype.AgentCard, executor a2asrv.AgentExecutor, lo
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 
-	return &A2AServer{
+	result := &A2AServer{
 		httpServer: &http.Server{
-			Addr:      addr,
-			Handler:   handler,
-			Protocols: protocols,
+			Addr:              addr,
+			Handler:           handler,
+			Protocols:         protocols,
+			ReadHeaderTimeout: defaultReadHeaderTimeout,
+			IdleTimeout:       defaultIdleTimeout,
+			MaxHeaderBytes:    defaultMaxHeaderBytes,
 		},
-		readyServer: &http.Server{Addr: ":8081", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/readyz" {
-				http.NotFound(w, r)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-		})},
 		grpcServer:   grpcServer,
 		healthServer: healthServer,
 		logger:       logger,
 		config:       config,
-	}, nil
+		listener:     config.Listener,
+	}
+	if !config.DisableSeparateReadiness {
+		result.readyServer = &http.Server{
+			Addr: ":8081",
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/readyz" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}),
+			ReadHeaderTimeout: readinessReadHeaderTimeout,
+			IdleTimeout:       readinessIdleTimeout,
+			MaxHeaderBytes:    readinessMaxHeaderBytes,
+		}
+	}
+	return result, nil
 }
 
 func getMaxContentLength(logger logr.Logger) *int64 {
@@ -187,15 +233,23 @@ func (s *A2AServer) Start() error {
 
 	s.listenErr = make(chan error, 1)
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.listener != nil {
+			err = s.httpServer.Serve(s.listener)
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			s.listenErr <- err
 		}
 	}()
-	go func() {
-		if err := s.readyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.listenErr <- err
-		}
-	}()
+	if s.readyServer != nil {
+		go func() {
+			if err := s.readyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.listenErr <- err
+			}
+		}()
+	}
 
 	return nil
 }
@@ -228,10 +282,12 @@ func (s *A2AServer) WaitForShutdown() error {
 		<-grpcStopped
 		return fmt.Errorf("error shutting down server: %w", err)
 	}
-	if err := s.readyServer.Shutdown(ctx); err != nil {
-		s.grpcServer.Stop()
-		<-grpcStopped
-		return fmt.Errorf("error shutting down readiness server: %w", err)
+	if s.readyServer != nil {
+		if err := s.readyServer.Shutdown(ctx); err != nil {
+			s.grpcServer.Stop()
+			<-grpcStopped
+			return fmt.Errorf("error shutting down readiness server: %w", err)
+		}
 	}
 	<-grpcStopped
 

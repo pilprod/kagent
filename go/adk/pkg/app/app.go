@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -45,6 +47,16 @@ type AppConfig struct {
 
 	// ShutdownTimeout is the graceful shutdown timeout. Defaults to 5 seconds.
 	ShutdownTimeout time.Duration
+
+	// Listener optionally supplies an already-bound, execution-provider-owned
+	// listener. When nil the server binds Host and Port itself.
+	Listener net.Listener
+
+	// ReadyzHandler is served on /readyz on Listener or the primary Host/Port.
+	ReadyzHandler http.Handler
+
+	// DisableSeparateReadiness disables the default :8081 listener.
+	DisableSeparateReadiness bool
 
 	// Logger is the structured logger. If nil, a production zap logger is created.
 	Logger logr.Logger
@@ -127,9 +139,9 @@ func New(cfg AppConfig, executor a2asrv.AgentExecutor) (*KAgentApp, error) {
 	}
 
 	serverConfig := server.ServerConfig{
-		Host:            cfg.Host,
-		Port:            cfg.Port,
-		ShutdownTimeout: cfg.ShutdownTimeout,
+		Host: cfg.Host, Port: cfg.Port, ShutdownTimeout: cfg.ShutdownTimeout,
+		Listener: cfg.Listener, ReadyzHandler: cfg.ReadyzHandler,
+		DisableSeparateReadiness: cfg.DisableSeparateReadiness,
 	}
 
 	a2aServer, err := server.NewA2AServer(cfg.AgentCard, executor, log, serverConfig, handlerOpts...)
