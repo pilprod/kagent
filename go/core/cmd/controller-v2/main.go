@@ -33,11 +33,8 @@ import (
 	"github.com/kagent-dev/kagent/go/core/internal/grpcserver"
 	authimpl "github.com/kagent-dev/kagent/go/core/internal/httpserver/auth"
 	"github.com/kagent-dev/kagent/go/core/internal/service/kubecrud"
-	sessionservice "github.com/kagent-dev/kagent/go/core/internal/service/session"
-	taskservice "github.com/kagent-dev/kagent/go/core/internal/service/task"
 	"github.com/kagent-dev/kagent/go/core/pkg/auth"
 	"github.com/kagent-dev/kagent/go/core/pkg/migrations"
-	legacysubstrate "github.com/kagent-dev/kagent/go/core/pkg/sandboxbackend/substrate"
 	"github.com/kagent-dev/kagent/go/core/v2/a2agateway"
 	"github.com/kagent-dev/kagent/go/core/v2/agentinstance"
 	"github.com/kagent-dev/kagent/go/core/v2/checkpoint"
@@ -106,7 +103,7 @@ func main() {
 		log.Fatalf("add reconciler to controller manager: %v", err)
 	}
 
-	actors, err := legacysubstrate.Dial(ctx, legacysubstrate.Config{
+	actors, err := v2substrate.Dial(ctx, v2substrate.Config{
 		AteAPIEndpoint: env("SUBSTRATE_ATE_API_ENDPOINT", "dns:///api.ate-system.svc:443"),
 		CAFile:         os.Getenv("SUBSTRATE_ATE_API_CA_FILE"),
 		ClientCertFile: os.Getenv("SUBSTRATE_ATE_API_CLIENT_CERT_FILE"),
@@ -124,7 +121,7 @@ func main() {
 	instances := agentinstance.NewService(store, authorizer, instanceWorkflow)
 	checkpoints := checkpoint.NewService(store, authorizer, actors, instanceWorkflow)
 	gatewayConnector, err := v2substrate.NewConnector(
-		env("SUBSTRATE_ATENET_ROUTER_URL", legacysubstrate.DefaultAtenetRouterURL),
+		env("SUBSTRATE_ATENET_ROUTER_URL", v2substrate.DefaultAtenetRouterURL),
 		authenticator,
 	)
 	if err != nil {
@@ -141,8 +138,6 @@ func main() {
 		Reflection:           envBool("GRPC_REFLECTION"),
 		Authenticator:        authenticator,
 		ShareStore:           store,
-		SessionService:       sessionservice.NewService(store),
-		TaskService:          taskservice.NewService(store),
 		AgentInstanceService: instances,
 		// Both halves of the pair CreateAgentInstance names. Without these two
 		// the only way to author a Harness or an AgentTemplate is kubectl.
