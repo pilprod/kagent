@@ -48,8 +48,10 @@ func TestCodexAndClaudeCompilersRenderPortableResolvedBundle(t *testing.T) {
 			require.Equal(t, string(test.provider), config.Root.Model.Provider)
 			if test.runtime == codingagent.RuntimeCodex {
 				require.Equal(t, "high", config.Root.Model.ReasoningEffort)
+				require.Equal(t, "fast", config.Root.Model.ServiceTier)
 			} else {
 				require.Empty(t, config.Root.Model.ReasoningEffort)
+				require.Empty(t, config.Root.Model.ServiceTier)
 			}
 			require.Len(t, config.Root.MCPGrants, 2)
 			policyByID := map[string]translator.MCPPolicyBinding{}
@@ -78,6 +80,9 @@ func TestCodexAndClaudeCompilersRenderPortableResolvedBundle(t *testing.T) {
 			providerHost := "api.openai.com"
 			if test.runtime == codingagent.RuntimeClaude {
 				providerHost = "api.anthropic.com"
+			} else {
+				require.Contains(t, revision.EgressDestinations, "auth.openai.com")
+				require.Contains(t, revision.EgressDestinations, "chatgpt.com")
 			}
 			require.Contains(t, revision.EgressDestinations, providerHost)
 			require.Contains(t, string(revision.Provenance), `"kind":"RemoteMCPServer"`)
@@ -108,7 +113,11 @@ func compileFixture(t *testing.T, selectedRuntime codingagent.Runtime, provider 
 		Spec:       v1alpha3.ModelConfigSpec{Provider: provider, Model: "model-child"},
 	}
 	if selectedRuntime == codingagent.RuntimeCodex {
-		rootModel.Spec.OpenAI = &v1alpha3.OpenAIConfig{ReasoningEffort: &effort}
+		responses := v1alpha3.OpenAIAPIFormatResponses
+		fast := v1alpha3.OpenAIServiceTierFast
+		rootModel.Spec.OpenAI = &v1alpha3.OpenAIConfig{
+			APIFormat: &responses, ReasoningEffort: &effort, ServiceTier: &fast,
+		}
 	}
 	server := &v1alpha3.RemoteMCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "search", Namespace: "test", UID: types.UID("uid-search")},
@@ -238,6 +247,25 @@ func TestCodingAgentCompilersFailClosedOnUnauthorizedInputs(t *testing.T) {
 		revision, err := compiler.Compile(context.Background(), input)
 		require.Nil(t, revision)
 		require.ErrorContains(t, err, "provider request options are runtime-owned")
+	})
+
+	t.Run("service tier without Responses API", func(t *testing.T) {
+		compiler, input := base()
+		fast := v1alpha3.OpenAIServiceTierFast
+		input.Root.ModelConfig.Spec.OpenAI = &v1alpha3.OpenAIConfig{ServiceTier: &fast}
+		revision, err := compiler.Compile(context.Background(), input)
+		require.Nil(t, revision)
+		require.ErrorContains(t, err, "serviceTier requires OpenAI apiFormat")
+	})
+
+	t.Run("unknown service tier", func(t *testing.T) {
+		compiler, input := base()
+		responses := v1alpha3.OpenAIAPIFormatResponses
+		unknown := v1alpha3.OpenAIServiceTier("slow")
+		input.Root.ModelConfig.Spec.OpenAI = &v1alpha3.OpenAIConfig{APIFormat: &responses, ServiceTier: &unknown}
+		revision, err := compiler.Compile(context.Background(), input)
+		require.Nil(t, revision)
+		require.ErrorContains(t, err, "invalid serviceTier")
 	})
 
 	t.Run("mutable workload image", func(t *testing.T) {

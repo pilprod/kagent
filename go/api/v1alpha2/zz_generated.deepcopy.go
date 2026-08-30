@@ -1402,6 +1402,11 @@ func (in *OpenAIConfig) DeepCopyInto(out *OpenAIConfig) {
 		*out = new(OpenAIAPIFormat)
 		**out = **in
 	}
+	if in.ServiceTier != nil {
+		in, out := &in.ServiceTier, &out.ServiceTier
+		*out = new(OpenAIServiceTier)
+		**out = **in
+	}
 	if in.TokenExchange != nil {
 		in, out := &in.TokenExchange, &out.TokenExchange
 		*out = new(TokenExchangeConfig)

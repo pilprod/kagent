@@ -36,8 +36,9 @@ import (
 //     sending both risks hard 400s.
 //   - both fields carry Minimum=1, so a non-positive value is rejected at
 //     admission rather than silently ignored by the translator.
-//   - reasoningEffort accepts the provider-wide superset, including xhigh and
-//     minimal, while rejecting values outside that set.
+//   - reasoningEffort accepts the provider-wide superset through max and ultra,
+//     while rejecting values outside that set.
+//   - serviceTier accepts only fast and only with the Responses API.
 func TestOpenAIConfigValidation(t *testing.T) {
 	testEnv := &envtest.Environment{
 		BinaryAssetsDirectory: envtestAssetsDir(t),
@@ -171,6 +172,19 @@ func TestOpenAIConfigValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "ultra reasoning effort accepted",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-reasoning-ultra", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-sol",
+						Provider: ModelProviderOpenAI,
+						OpenAI:   &OpenAIConfig{ReasoningEffort: new(OpenAIReasoningEffort("ultra"))},
+					},
+				}
+			},
+		},
+		{
 			name: "minimal reasoning effort remains accepted",
 			build: func() ctrl_client.Object {
 				return &ModelConfig{
@@ -196,6 +210,53 @@ func TestOpenAIConfigValidation(t *testing.T) {
 				}
 			},
 			wantReject: "reasoningEffort",
+		},
+		{
+			name: "fast service tier with Responses API accepted",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-fast-responses", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI: &OpenAIConfig{
+							APIFormat:   new(OpenAIAPIFormatResponses),
+							ServiceTier: new(OpenAIServiceTierFast),
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "fast service tier with Chat Completions API rejected",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-fast-chat", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI:   &OpenAIConfig{ServiceTier: new(OpenAIServiceTierFast)},
+					},
+				}
+			},
+			wantReject: "serviceTier is only supported with apiFormat responses",
+		},
+		{
+			name: "unknown service tier rejected",
+			build: func() ctrl_client.Object {
+				return &ModelConfig{
+					ObjectMeta: metav1.ObjectMeta{Name: "mc-unknown-tier", Namespace: ns},
+					Spec: ModelConfigSpec{
+						Model:    "gpt-5.6-codex",
+						Provider: ModelProviderOpenAI,
+						OpenAI: &OpenAIConfig{
+							APIFormat:   new(OpenAIAPIFormatResponses),
+							ServiceTier: new(OpenAIServiceTier("slow")),
+						},
+					},
+				}
+			},
+			wantReject: "serviceTier",
 		},
 	}
 

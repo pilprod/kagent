@@ -40,7 +40,7 @@ func TestConfigValidationPinsRuntimeAndImmutableSources(t *testing.T) {
 		Runtime: RuntimeCodex,
 		Root: AgentConfig{
 			TemplateName: "assistant",
-			Model:        ModelConfig{Provider: "OpenAI", Name: "gpt-5", ReasoningEffort: "high"},
+			Model:        ModelConfig{Provider: "OpenAI", Name: "gpt-5", ReasoningEffort: "ultra", ServiceTier: "fast"},
 			MCPGrants:    []MCPGrant{{ID: "mcp-" + strings.Repeat("a", 64), Tools: []string{"get_issue"}}},
 			Skills: []Skill{{Name: "review", Source: ArtifactSource{
 				OCI: "ghcr.io/acme/review@sha256:" + strings.Repeat("a", 64),
@@ -73,6 +73,10 @@ func TestConfigValidationPinsRuntimeAndImmutableSources(t *testing.T) {
 	claude.Runtime = RuntimeClaude
 	claude.Root.Model.Provider = "Anthropic"
 	require.ErrorContains(t, claude.Validate(), "reasoningEffort")
+
+	invalidTier := config
+	invalidTier.Root.Model.ServiceTier = "slow"
+	require.ErrorContains(t, invalidTier.Validate(), "serviceTier")
 
 	unsafeBinding := config
 	unsafeBinding.Root.SharedAgents = []SharedBinding{{

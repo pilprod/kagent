@@ -7,6 +7,7 @@ export interface OpenAIConfig {
   organization?: string;
   temperature?: string;
   maxTokens?: number;
+  maxCompletionTokens?: number;
   topP?: string;
   frequencyPenalty?: string;
   presencePenalty?: string;
@@ -14,6 +15,8 @@ export interface OpenAIConfig {
   n?: number;
   timeout?: number;
   reasoningEffort?: string;
+  apiFormat?: "chatCompletions" | "responses";
+  serviceTier?: "fast";
 }
 
 export interface AnthropicConfig {

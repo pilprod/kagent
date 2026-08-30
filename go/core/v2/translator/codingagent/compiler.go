@@ -236,20 +236,33 @@ func (c *Compiler) compileModel(model *v1alpha3.ModelConfig) (ModelConfig, []str
 		if hasProviderConfigOtherThan(spec, "openAI") {
 			return ModelConfig{}, nil, v2translator.NewValidationError("Codex ModelConfig contains configuration for another provider")
 		}
-		effort := ""
+		effort, serviceTier := "", ""
 		if spec.OpenAI != nil {
-			allowed := &v1alpha3.OpenAIConfig{ReasoningEffort: spec.OpenAI.ReasoningEffort}
-			if spec.OpenAI.APIFormat != nil && *spec.OpenAI.APIFormat == v1alpha3.OpenAIAPIFormatChatCompletions {
+			allowed := &v1alpha3.OpenAIConfig{
+				ReasoningEffort: spec.OpenAI.ReasoningEffort,
+				ServiceTier:     spec.OpenAI.ServiceTier,
+			}
+			if spec.OpenAI.APIFormat != nil &&
+				(*spec.OpenAI.APIFormat == v1alpha3.OpenAIAPIFormatChatCompletions || *spec.OpenAI.APIFormat == v1alpha3.OpenAIAPIFormatResponses) {
 				allowed.APIFormat = spec.OpenAI.APIFormat
 			}
 			if !reflect.DeepEqual(spec.OpenAI, allowed) {
-				return ModelConfig{}, nil, v2translator.NewValidationError("Codex v2 supports only OpenAI reasoningEffort; provider request options are runtime-owned")
+				return ModelConfig{}, nil, v2translator.NewValidationError("Codex v2 supports only OpenAI apiFormat, reasoningEffort, and serviceTier; other provider request options are runtime-owned")
 			}
 			if spec.OpenAI.ReasoningEffort != nil {
 				effort = string(*spec.OpenAI.ReasoningEffort)
 			}
+			if spec.OpenAI.ServiceTier != nil {
+				serviceTier = string(*spec.OpenAI.ServiceTier)
+				if spec.OpenAI.APIFormat == nil || *spec.OpenAI.APIFormat != v1alpha3.OpenAIAPIFormatResponses {
+					return ModelConfig{}, nil, v2translator.NewValidationError("Codex serviceTier requires OpenAI apiFormat %q", v1alpha3.OpenAIAPIFormatResponses)
+				}
+			}
 		}
-		return ModelConfig{Provider: string(provider), Name: spec.Model, ReasoningEffort: effort}, []string{"api.openai.com"}, nil
+		return ModelConfig{
+			Provider: string(provider), Name: spec.Model,
+			ReasoningEffort: effort, ServiceTier: serviceTier,
+		}, []string{"api.openai.com", "auth.openai.com", "chatgpt.com"}, nil
 	case RuntimeClaude:
 		if provider != v1alpha3.ModelProviderAnthropic {
 			return ModelConfig{}, nil, v2translator.NewValidationError("Claude requires an Anthropic ModelConfig, got %q", provider)

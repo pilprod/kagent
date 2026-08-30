@@ -344,13 +344,29 @@ Content:
 
 Implement the second release-blocking adapter:
 
-- Render Shared children into private `CODEX_HOME/agents/*.toml`.
+- Pin one exact Codex release and treat its generated app-server schema as the
+  adapter protocol contract; reject runtime version drift.
+- Drive `codex app-server` over stdio JSONL with the official initialize,
+  thread start/resume, turn start/interrupt, and streamed notification
+  lifecycle.
+- Keep approval handling fail-closed. Select `externalSandbox` only when the
+  execution provider attests an outer sandbox; direct host processes use
+  Codex's own workspace-write sandbox.
+- Do not launch a pre-authenticated raw host process until subscription
+  credentials are isolated from workspace commands. `workspace-write` limits
+  writes, not general filesystem reads; a same-user `auth.json` is not a
+  credential boundary.
 - Render explicit MCP bindings into Codex configuration.
 - Materialize selected skills into the pinned runtime layout.
-- Drive `codex exec --json` and `codex exec resume`.
-- Preserve threads, workspace, MCP handles, and adapter state in DurableDir.
+- Preserve thread and adapter state in DurableDir for Substrate-backed
+  runtimes. Host-managed subscription credentials remain outside snapshots
+  and compiled configuration.
 - Map Codex output, tool calls, approvals, cancellation, and failures to the private upstream A2A service.
-- Publish only capabilities proven by the conformance suite.
+- Keep the image on the preview release rail until task/resume/cancel,
+  MCP/skills, malformed-protocol cleanup, and snapshot behavior pass the
+  conformance suite. Publish only capabilities proven by that suite.
+- Add Shared children only after the private subagent contract is proven; do
+  not synthesize it through MCP or prompt text.
 
 OpenClaw, Hermes, hosted profiles, and shared-host topology are separate future PRs.
 

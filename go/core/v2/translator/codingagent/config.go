@@ -59,6 +59,7 @@ type ModelConfig struct {
 	Provider        string `json:"provider"`
 	Name            string `json:"name"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	ServiceTier     string `json:"serviceTier,omitempty"`
 }
 
 // MCPGrant is a logical, content-addressed grant reference exposed through the
@@ -201,12 +202,15 @@ func validateAgent(runtime Runtime, agent *AgentConfig, depth int, seenGrantIDs 
 	if agent.Model.Provider != wantProvider {
 		return fmt.Errorf("agent %q provider %q is incompatible with %s", agent.TemplateName, agent.Model.Provider, runtime)
 	}
-	if runtime == RuntimeClaude && agent.Model.ReasoningEffort != "" {
-		return fmt.Errorf("agent %q reasoningEffort is not supported by claude", agent.TemplateName)
+	if runtime == RuntimeClaude && (agent.Model.ReasoningEffort != "" || agent.Model.ServiceTier != "") {
+		return fmt.Errorf("agent %q reasoningEffort and serviceTier are not supported by claude", agent.TemplateName)
 	}
 	if runtime == RuntimeCodex && agent.Model.ReasoningEffort != "" &&
-		!slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh"}, agent.Model.ReasoningEffort) {
+		!slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}, agent.Model.ReasoningEffort) {
 		return fmt.Errorf("agent %q has invalid reasoningEffort %q", agent.TemplateName, agent.Model.ReasoningEffort)
+	}
+	if runtime == RuntimeCodex && agent.Model.ServiceTier != "" && agent.Model.ServiceTier != "fast" {
+		return fmt.Errorf("agent %q has invalid serviceTier %q", agent.TemplateName, agent.Model.ServiceTier)
 	}
 
 	for i := range agent.MCPGrants {
