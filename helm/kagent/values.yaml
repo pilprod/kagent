@@ -158,6 +158,10 @@ database:
 # ==============================================================================
 
 rbac:
+  # -- Whether to create RBAC resources owned by this chart. Set to false when
+  # getter/writer, leader-election, metrics, and Substrate env-source access are
+  # managed externally. ServiceAccounts are not affected.
+  create: true
   # -- Namespaces in which to create Role and RoleBinding resources.
   # If empty (default), the chart creates cluster-scoped ClusterRole and ClusterRoleBinding
   # resources and the controller watches all namespaces.

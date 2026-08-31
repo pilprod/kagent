@@ -89,6 +89,7 @@
 {{- end -}}
 
 {{- include "kagent.rbac.validate" . -}}
+{{- if .Values.rbac.create }}
 {{- if .Values.rbac.namespaces }}
 {{- $namespaces := .Values.rbac.namespaces | uniq | sortAlpha }}
 {{- range $namespace := $namespaces }}
@@ -112,4 +113,5 @@ metadata:
     {{- include "kagent.labels" . | nindent 4 }}
 rules:
   {{- include "kagent.writer.rules" . | nindent 2 }}
+{{- end }}
 {{- end }}

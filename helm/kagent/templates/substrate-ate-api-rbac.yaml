@@ -1,4 +1,4 @@
-{{- if .Values.controller.substrate.enabled }}
+{{- if and .Values.rbac.create .Values.controller.substrate.enabled }}
 {{- $namespaces := splitList "," (include "kagent.substrate.envSourceNamespaces" .) }}
 {{- $ateNs := .Values.controller.substrate.ateApiServer.namespace | default "ate-system" }}
 {{- $ateSA := .Values.controller.substrate.ateApiServer.serviceAccount | default "ate-api-server" }}
