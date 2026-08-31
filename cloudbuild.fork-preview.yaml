@@ -310,6 +310,7 @@ steps:
       - $PROJECT_ID
       - ${_SOURCE_COMMIT}
       - ${_VERSION}
+      - v${_VERSION}
       - /workspace/release
 
   - id: upload-release-receipt
