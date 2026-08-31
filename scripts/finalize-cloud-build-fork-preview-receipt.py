@@ -23,12 +23,18 @@ def sha256(path: pathlib.Path) -> str:
     return hasher.hexdigest()
 
 
+def accepted_source_tags(version: str) -> frozenset[str]:
+    """Return the exact source-tag contracts accepted for one artifact version."""
+    return frozenset((f"v{version}", f"gcp-v{version}"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("build_id")
     parser.add_argument("project_id")
     parser.add_argument("source_commit")
     parser.add_argument("version")
+    parser.add_argument("source_tag")
     parser.add_argument("release_directory", type=pathlib.Path)
     args = parser.parse_args()
 
@@ -40,20 +46,27 @@ def main() -> int:
         raise SystemExit("invalid source commit")
     if not VERSION_RE.fullmatch(args.version):
         raise SystemExit("invalid preview version")
+    if args.source_tag not in accepted_source_tags(args.version):
+        raise SystemExit(
+            "source tag must exactly match v<version> or gcp-v<version>"
+        )
 
     evidence_path = args.release_directory / "release-evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     if evidence.get("source_commit") != args.source_commit:
         raise SystemExit("release evidence source commit does not match")
-    if evidence.get("tag") != f"v{args.version}":
+    artifact_tag = f"v{args.version}"
+    if evidence.get("tag") != artifact_tag:
         raise SystemExit("release evidence version does not match")
 
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
+        "artifact_tag": artifact_tag,
         "builder": "google-cloud-build",
         "build_id": args.build_id,
         "project_id": args.project_id,
         "source_commit": args.source_commit,
+        "source_tag": args.source_tag,
         "version": args.version,
     }
     receipt_path = args.release_directory / "cloud-build-receipt.json"

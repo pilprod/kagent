@@ -208,6 +208,14 @@ if "claudeHarness" in assembler:
     raise SystemExit("Cloud Build evidence must not activate Claude Harness")
 if '"google-cloud-build"' not in finalizer:
     raise SystemExit("Cloud Build receipt identity is missing")
+for fragment in (
+    'f"v{version}"',
+    'f"gcp-v{version}"',
+    '"artifact_tag": artifact_tag',
+    '"source_tag": args.source_tag',
+):
+    if fragment not in finalizer:
+        raise SystemExit(f"Cloud Build source-tag contract is missing: {fragment}")
 PY
 
 mkdir -p "${tmp_dir}/digests" "${tmp_dir}/charts"
@@ -235,6 +243,7 @@ python3 "${receipt_finalizer}" \
   test-project \
   "${head}" \
   0.0.0-test.kap.1 \
+  gcp-v0.0.0-test.kap.1 \
   "${tmp_dir}/release"
 (cd "${tmp_dir}/release" && sha256sum --check SHA256SUMS)
 (cd "${tmp_dir}/release" && sha256sum --check release-evidence.json.sha256)
@@ -255,5 +264,59 @@ if sorted(evidence["runtime_images"]) != ["codexHarness", "kagentHarness"]:
 if sorted(evidence["charts"]) != ["application", "crds"]:
     raise SystemExit("wrong chart set")
 PY
+
+python3 - "${tmp_dir}/release/cloud-build-receipt.json" "${head}" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if receipt["schemaVersion"] != 2:
+    raise SystemExit("wrong Cloud Build receipt schema")
+if receipt["source_commit"] != sys.argv[2]:
+    raise SystemExit("wrong receipt source commit")
+if receipt["version"] != "0.0.0-test.kap.1":
+    raise SystemExit("wrong receipt artifact version")
+if receipt["artifact_tag"] != "v0.0.0-test.kap.1":
+    raise SystemExit("wrong receipt artifact tag")
+if receipt["source_tag"] != "gcp-v0.0.0-test.kap.1":
+    raise SystemExit("wrong receipt source tag")
+PY
+
+python3 "${assembler}" \
+  0.0.0-test.kap.1 \
+  "${head}" \
+  "${tmp_dir}/digests" \
+  "${tmp_dir}/charts" \
+  "${tmp_dir}/legacy-release"
+python3 "${receipt_finalizer}" \
+  test-build-legacy \
+  test-project \
+  "${head}" \
+  0.0.0-test.kap.1 \
+  v0.0.0-test.kap.1 \
+  "${tmp_dir}/legacy-release"
+
+for rejected_tag in \
+  gcp-v0.0.0-test.kap.2 \
+  release-0.0.0-test.kap.1; do
+  suffix="$(printf '%s' "${rejected_tag}" | tr -c '[:alnum:]' '-')"
+  rejected_release="${tmp_dir}/rejected-${suffix}"
+  python3 "${assembler}" \
+    0.0.0-test.kap.1 \
+    "${head}" \
+    "${tmp_dir}/digests" \
+    "${tmp_dir}/charts" \
+    "${rejected_release}"
+  if python3 "${receipt_finalizer}" \
+    test-build-rejected \
+    test-project \
+    "${head}" \
+    0.0.0-test.kap.1 \
+    "${rejected_tag}" \
+    "${rejected_release}" >/dev/null 2>&1; then
+    fail "receipt finalizer accepted invalid source tag ${rejected_tag}"
+  fi
+done
 
 printf 'Docker-less Cloud Build fork preview contracts passed\n'
