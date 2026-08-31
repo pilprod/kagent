@@ -114,6 +114,7 @@
 {{- end -}}
 
 {{- include "kagent.rbac.validate" . -}}
+{{- if .Values.rbac.create }}
 {{- if .Values.rbac.namespaces }}
 {{- range $namespace := (.Values.rbac.namespaces | uniq | sortAlpha) }}
 ---
@@ -136,4 +137,5 @@ metadata:
     {{- include "kagent.labels" . | nindent 4 }}
 rules:
   {{- include "kagent.getter.rules" . | nindent 2 }}
+{{- end }}
 {{- end }}

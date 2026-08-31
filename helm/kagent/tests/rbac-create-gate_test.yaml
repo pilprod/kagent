@@ -1,0 +1,123 @@
+suite: test rbac create gate
+templates:
+  - controller-serviceaccount.yaml
+  - rbac/getter-role.yaml
+  - rbac/writer-role.yaml
+  - rbac/getter-rolebinding.yaml
+  - rbac/writer-rolebinding.yaml
+  - rbac/leader-election-role.yaml
+  - rbac/leader-election-rolebinding.yaml
+  - rbac/metrics-reader-clusterrole.yaml
+  - rbac/metrics-auth-clusterrole.yaml
+  - rbac/metrics-auth-clusterrolebinding.yaml
+  - substrate-ate-api-rbac.yaml
+tests:
+  - it: should create all enabled chart rbac by default
+    set:
+      controller.replicas: 2
+      controller.metrics.enabled: true
+      controller.substrate.enabled: true
+      rbac.namespaces:
+        - NAMESPACE
+    asserts:
+      - isKind:
+          of: Role
+        template: rbac/getter-role.yaml
+      - isKind:
+          of: Role
+        template: rbac/writer-role.yaml
+      - isKind:
+          of: RoleBinding
+        template: rbac/getter-rolebinding.yaml
+      - isKind:
+          of: RoleBinding
+        template: rbac/writer-rolebinding.yaml
+      - isKind:
+          of: Role
+        template: rbac/leader-election-role.yaml
+      - isKind:
+          of: RoleBinding
+        template: rbac/leader-election-rolebinding.yaml
+      - isKind:
+          of: ClusterRole
+        template: rbac/metrics-reader-clusterrole.yaml
+      - isKind:
+          of: ClusterRole
+        template: rbac/metrics-auth-clusterrole.yaml
+      - isKind:
+          of: ClusterRoleBinding
+        template: rbac/metrics-auth-clusterrolebinding.yaml
+      - hasDocuments:
+          count: 2
+        template: substrate-ate-api-rbac.yaml
+      - isKind:
+          of: Role
+        template: substrate-ate-api-rbac.yaml
+        documentIndex: 0
+      - isKind:
+          of: RoleBinding
+        template: substrate-ate-api-rbac.yaml
+        documentIndex: 1
+
+  - it: should keep non-rbac resources and suppress all enabled chart rbac when disabled
+    set:
+      controller.replicas: 2
+      controller.metrics.enabled: true
+      controller.substrate.enabled: true
+      rbac.create: false
+      rbac.namespaces:
+        - NAMESPACE
+    asserts:
+      - isKind:
+          of: ServiceAccount
+        template: controller-serviceaccount.yaml
+      - hasDocuments:
+          count: 1
+        template: controller-serviceaccount.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/getter-role.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/writer-role.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/getter-rolebinding.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/writer-rolebinding.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/leader-election-role.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/leader-election-rolebinding.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/metrics-reader-clusterrole.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/metrics-auth-clusterrole.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/metrics-auth-clusterrolebinding.yaml
+      - hasDocuments:
+          count: 0
+        template: substrate-ate-api-rbac.yaml
+
+  - it: should suppress cluster-scoped getter and writer rbac when disabled
+    set:
+      rbac.create: false
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: rbac/getter-role.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/writer-role.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/getter-rolebinding.yaml
+      - hasDocuments:
+          count: 0
+        template: rbac/writer-rolebinding.yaml
