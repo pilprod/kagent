@@ -116,6 +116,11 @@ export GOPRIVATE=
 export GONOPROXY=
 export GONOSUMDB=
 (cd "${repository_root}/go" && go mod download)
+envtest_assets="$(cd "${repository_root}/go" && make -s envtest-path | tail -n1)"
+test -n "${envtest_assets}"
+test -x "${envtest_assets}/kube-apiserver"
+test -x "${envtest_assets}/etcd"
+export KUBEBUILDER_ASSETS="${envtest_assets}"
 (cd "${repository_root}/go" && go test \
   ./harness/codex/... \
   ./harness/claude/... \
