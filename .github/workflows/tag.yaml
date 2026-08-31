@@ -4,9 +4,8 @@ on:
   push:
     tags:
     - "v*.*.*"
-    # Fork preview tags are owned exclusively by fork-preview-release.yaml.
-    # Letting this generic rail see them would race its fail-closed tag checks
-    # and publish charts, images, and Python packages outside its evidence.
+    # Public fork preview coordinates are retired and remain excluded here.
+    # Private previews use gcp-v*.kap.* through the app-gcp Pub/Sub/GAR rail.
     - "!v*.kap.*"
 
 concurrency:
@@ -31,13 +30,17 @@ jobs:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
         set -euo pipefail
+        [[ "${GITHUB_REPOSITORY}" == "kagent-dev/kagent" ]] || {
+          echo "public upstream releases are disabled in the pilprod/kagent fork" >&2
+          exit 1
+        }
         [[ "${GITHUB_REF_TYPE}" == "tag" ]]
         [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
           echo "release tag is not a strict v-prefixed SemVer coordinate" >&2
           exit 1
         }
         [[ "${GITHUB_REF_NAME}" != *".kap."* ]] || {
-          echo "fork preview coordinates are owned exclusively by fork-preview-release.yaml" >&2
+          echo "public fork preview coordinates are retired; use the private app-gcp rail" >&2
           exit 1
         }
         [[ "$(git cat-file -t "${GITHUB_REF}")" == "tag" ]] || {

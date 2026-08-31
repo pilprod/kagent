@@ -32,6 +32,35 @@ git -C "${repository_root}" merge-base --is-ancestor \
 test -z "$(git -C "${repository_root}" status --porcelain)"
 test ! -e "${repository_root}/go.work"
 test ! -e "${repository_root}/go/go.work"
+command -v curl >/dev/null 2>&1
+
+workflow_state="$({
+  curl --fail --silent --show-error \
+    --proto '=https' \
+    --tlsv1.2 \
+    --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    'https://api.github.com/repos/pilprod/kagent/actions/workflows?per_page=100'
+})"
+jq -e '
+  ([.workflows[] |
+    select(.id == 346150199 and
+      .name == "Fork immutable preview release" and
+      .state == "disabled_manually")] | length) == 1 and
+  ([.workflows[] |
+    select(.id == 340304832 and
+      .name == "Tag and Push" and
+      .state == "disabled_manually")] | length) == 1
+' <<<"${workflow_state}" >/dev/null || {
+  printf 'public GitHub release workflows are not disabled_manually\n' >&2
+  exit 1
+}
+
+test -n "${HELM_REGISTRY_CONFIG:-}"
+test -r "${HELM_REGISTRY_CONFIG}"
+test -n "${SUBSTRATE_RELEASE_EVIDENCE_URI:-}"
+test -n "${SUBSTRATE_RELEASE_EVIDENCE:-}"
+test -r "${SUBSTRATE_RELEASE_EVIDENCE}"
 
 "${script_directory}/test-verify-gke-preview-substrate-pin.sh"
 GOWORK=off \
@@ -40,6 +69,9 @@ GOSUMDB=sum.golang.org \
 GOPRIVATE= \
 GONOPROXY= \
 GONOSUMDB= \
+HELM_REGISTRY_CONFIG="${HELM_REGISTRY_CONFIG}" \
+SUBSTRATE_RELEASE_EVIDENCE_URI="${SUBSTRATE_RELEASE_EVIDENCE_URI}" \
+SUBSTRATE_RELEASE_EVIDENCE="${SUBSTRATE_RELEASE_EVIDENCE}" \
   "${script_directory}/verify-gke-preview-substrate-pin.sh"
 
 go_digest='sha256:f83f9c10f9c18d7b9a71d241b63b8824de5a0ad6caea4255406e42b4005320fe'

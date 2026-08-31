@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "ready",
   "requiredCapabilities": [
     "pkg/api/v1alpha1.ActorTemplateSpec.WorkerProvider",
@@ -27,11 +27,33 @@
     }
   },
   "helmChart": {
-    "repository": "oci://ghcr.io/pilprod/substrate/helm",
+    "repository": "oci://europe-west3-docker.pkg.dev/yourown-chat/kagent-preview/substrate/helm",
     "name": "substrate",
-    "version": "0.0.22",
+    "supportedProfiles": [
+      "external-control-plane-only"
+    ],
+    "requiredComponents": [
+      "agentgateway",
+      "ateapi",
+      "atecontroller",
+      "atenet"
+    ],
+    "sourceImageRefs": {
+      "agentgateway": "ghcr.io/kagent-dev/substrate/agentgateway@sha256:068028a256bd63c91fd6e85a471269c014747297b0ffa785feaef6967eb0c429",
+      "ateapi": "ghcr.io/pilprod/substrate/ateapi@sha256:8a4cf985f809cc768e32091e39d45bce5f2e95fe43cd67f01d5e60c7df2ea868",
+      "atecontroller": "ghcr.io/pilprod/substrate/atecontroller@sha256:0845893ae2ecfd15f580bc410db22c8daae0d6b0388eca67541154a6ec98f554",
+      "atenet": "ghcr.io/pilprod/substrate/atenet@sha256:01d96092c93fd623dbe051479a76573da551b56be29121b11b760d9067fc8c4c"
+    },
+    "version": "0.0.22-private.2",
     "appVersion": "v0.0.22",
-    "registryDigest": "sha256:bb166a3170cfa5e9ea655497d2e255fc0fa68cf5476f46b9ec25332c9cd1a49a",
-    "packageSha256": "sha256:817cfea953b84ba56f96f0dc4d0646894f12bf38de60de495b7d28cd45c30ddf"
+    "registryDigest": "sha256:171b531f06758aa05cd10ed7ccfa9cbe4d70545a5205f1477b8f109072c7d3b1",
+    "packageSha256": "sha256:6c968361da78c2941357d8db5c7f2b1235a8e86723062982dce0599d7fd0b40e",
+    "publication": {
+      "sourceCommit": "e9ed68e587b56df2aa2a7f0267a744598c4d48b4",
+      "sourceRef": "refs/tags/v0.0.22",
+      "sourceTagObject": "00a6a684cea3b3feea67461cf79347332ec759ef",
+      "evidenceUri": "gs://yourown-chat-kagent-preview-evidence-europe-west3/substrate/0.0.22-private.2/release-evidence.json#1788214261713293",
+      "evidenceSha256": "sha256:8c08f87cf282f5d1f32225964fe3a9cec1540b560b9688f315e23d97062c5aa2"
+    }
   }
 }

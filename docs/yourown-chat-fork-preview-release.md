@@ -1,271 +1,151 @@
-# YourOwn.Chat fork preview release
+# YourOwn.Chat private kagent preview release
 
-This runbook publishes the ExternalSlot testbed in a fixed order. It does not
-authorize a Git push, GitHub setting change, package publication, or GKE apply.
-Each of those remains a separately reviewed operation.
+This runbook publishes the ExternalSlot testbed through the private Google
+Cloud release rail. It does not authorize a Git push, Terraform apply, package
+publication, or GKE promotion; each remains a separately reviewed operation.
 
 The preview contains the kagent controller and UI, the declarative Go agent
 runtime, the Codex harness image, the kagent charts, and code-only native Codex
 and Claude adapters. It does not publish an image with Claude Code preinstalled.
-Such an image remains disabled until the Anthropic Commercial Terms gate is
+That image remains disabled until the Anthropic Commercial Terms gate is
 explicitly satisfied.
 
-## Preconditions
+## Release boundary
 
-1. `.github/gke-preview-substrate-pin.json` has `status: ready` and identifies
-   the exact public `github.com/pilprod/substrate` v0.0.22 Go module release
-   plus the matching `oci://ghcr.io/pilprod/substrate/helm/substrate` chart.
-   The manifest is ready only after the public Go proxy, checksum database,
-   immutable source tag, and matching OCI chart have all been verified.
-2. Both kagent and the Local Agent Host use that exact immutable public
-   Substrate version. Local `go.work` files, filesystem replacements, private
-   proxies, and fork substitutions are development-only and forbidden in
-   release jobs.
-3. GitHub immutable releases are enabled for `pilprod/kagent` and
-   `pilprod/yourown-chat-local-agent-host`.
-4. The source commits, release coordinates, and target GKE bundle have been
-   reviewed independently. A successful test run is not deployment approval.
+The only supported kagent preview publisher is the Pub/Sub-triggered Cloud
+Build owned by the `app-gcp` Stack. It writes immutable images and OCI charts to
+the private Artifact Registry repository and writes release evidence to the
+private evidence bucket.
 
-## 1. Publish and pin compatible Substrate artifacts
+The historical `v*.kap.*` GitHub Actions workflow and the checked-in
+`cloudbuild.fork-preview.yaml` public fallback are guard-only files. They fail
+unconditionally and contain no GHCR credential or publication capability. Do
+not submit either one. Private releases use annotated `gcp-v*.kap.*` source
+tags.
 
-Publish the reviewed immutable `pilprod/substrate` v0.0.22 release containing
-every capability listed in `.github/gke-preview-substrate-pin.json`. The Go
-module and Helm chart must come from the exact declared fork identities and
-share the same semantic version. Record the module checksums and origin
-tag/commit together with the
-chart registry digest and package SHA-256, then change the manifest to
-`status: ready`.
+GitHub evaluates a tag-triggered workflow from the tagged commit, so a HEAD
+guard cannot protect old commits by itself. The repository-level workflow state
+is therefore part of the private-only boundary. Before creating any tag, verify
+that both public publishers remain `disabled_manually` in `pilprod/kagent`:
 
-Run `scripts/test-verify-gke-preview-substrate-pin.sh`, followed by
-`scripts/verify-gke-preview-substrate-pin.sh` with `GOWORK=off`, the public Go
-proxy, and the public checksum database. A locally published fork preview may
-still be used for development, but it cannot unlock this consumer release
-rail. Do not publish kagent or the Local Agent Host while the manifest remains
-blocked.
+- `Fork immutable preview release` (workflow ID `346150199`);
+- `Tag and Push` (workflow ID `340304832`).
+
+Re-enabling either workflow invalidates the private-only release precondition,
+including for tags that point to historical commits. PR and CI workflows remain
+enabled. The private Cloud Build source gate reads this repository state again
+and fails before building if either public publisher has been re-enabled.
+
+## 1. Verify the immutable Substrate dependency
+
+`.github/gke-preview-substrate-pin.json` must have `status: ready` and bind all
+of the following to one reviewed source release:
+
+- public `github.com/pilprod/substrate` Go module `v0.0.22`, with its checksum,
+  annotated source tag, and source commit;
+- private application chart
+  `oci://europe-west3-docker.pkg.dev/yourown-chat/kagent-preview/substrate/helm/substrate:0.0.22-private.2`,
+  including registry digest and package SHA-256;
+- generation-qualified private release evidence URI and its SHA-256;
+- profile `external-control-plane-only`;
+- exactly `agentgateway`, `ateapi`, `atecontroller`, and `atenet` for both
+  `linux/amd64` and `linux/arm64`.
+
+The verifier checks the public Go proxy and checksum database, annotated source
+tag, exact private chart, exact evidence object, scan policy, source-to-private
+copy provenance, and the private GAR image indexes. For every required image it
+also fetches the two declared child manifests and verifies their digests; only
+valid `unknown/unknown` attestation descriptors may accompany the two runtime
+platforms.
+
+The release job supplies two short-lived inputs:
+
+- `SUBSTRATE_RELEASE_EVIDENCE` and its identical generation-qualified
+  `SUBSTRATE_RELEASE_EVIDENCE_URI`;
+- `HELM_REGISTRY_CONFIG`, containing a short-lived Google access token for
+  `europe-west3-docker.pkg.dev`.
+
+No GitHub token, static registry password, local `go.work`, filesystem replace,
+or private Go proxy is accepted by this dependency gate. Public GHCR refs are
+provenance only; the verifier does not pull them or accept them as deployment
+coordinates.
+
+Run the semantic suite first, then the live verifier:
+
+```sh
+scripts/test-verify-gke-preview-substrate-pin.sh
+GOWORK=off \
+GOPROXY=https://proxy.golang.org \
+GOSUMDB=sum.golang.org \
+GOPRIVATE= \
+GONOPROXY= \
+GONOSUMDB= \
+HELM_REGISTRY_CONFIG=/path/to/short-lived-registry-config.json \
+SUBSTRATE_RELEASE_EVIDENCE=/path/to/release-evidence.json \
+SUBSTRATE_RELEASE_EVIDENCE_URI='gs://bucket/substrate/version/release-evidence.json#generation' \
+  scripts/verify-gke-preview-substrate-pin.sh
+```
 
 ## 2. Publish the kagent fork preview
 
-Create an annotated tag matching:
+Merge the reviewed source to the fork branch first. Create an annotated tag on
+the merge commit with this coordinate:
 
 ```text
-v<major>.<minor>.<patch>-<label>.kap.<sequence>
+gcp-v<major>.<minor>.<patch>-<label>.kap.<sequence>
 ```
 
-The tag-owned `fork-preview-release.yaml` rail is exclusive for `.kap` tags;
-the generic upstream tag workflow excludes them. Before publishing, the rail
-proves the exact repository and annotated tag, the public Substrate pin and its
-checksums, pinned base images and provider CLI archives, release-critical
-tests, and the GitHub immutable-release setting.
+Apply the exact merge commit and generation-qualified Substrate evidence URI in
+`app-gcp`. After the Terraform plan shows only the expected publisher update,
+publish the exact tag to the configured Pub/Sub topic. The private trigger then:
 
-The resulting prerelease contains:
+1. proves the repository, annotated tag, branch reachability, and clean source;
+2. verifies the pinned Substrate evidence, live private chart, and live private
+   image manifests;
+3. runs the release-critical Go, chart, and contract suites;
+4. builds the controller, UI, `golang-adk`, and Codex harness images for
+   `linux/amd64` and `linux/arm64` under build-unique candidate coordinates;
+5. scans candidates and acquires an immutable generation-zero release lock;
+6. promotes digest-verified images and reproducible charts to final private GAR
+   coordinates;
+7. writes generation-qualified deployment evidence and a Cloud Build receipt.
 
-- digest-qualified controller, UI, declarative Go agent runtime, and Codex
-  harness image evidence;
-- digest-qualified dependency-free kagent and CRD charts;
-- reproducible code-only `kagent-codex-*` and `kagent-claude-*` native archives;
-- `SHA256SUMS`, provenance attestations, and `release-evidence.json`.
+The evidence schema records only chart-installed `controller` and `ui` under
+`image_refs`. The declarative runtime and Codex harness remain separately
+activated under `runtime_images.kagentHarness` and
+`runtime_images.codexHarness`. `runtime_images.claudeHarness` is intentionally
+absent. Every workload image is digest-qualified and propagated unchanged from
+`Harness.spec.workload.image` into the compiled Substrate `ActorTemplate`.
 
-The schema v3 release evidence records the declarative `golang-adk` runtime under
-`runtime_images.kagentHarness`. Its only v2 API consumer is the immutable
-`Harness.spec.workload.image` field; the controller propagates that exact
-digest-qualified reference into the compiled `Revision` and then the Substrate
-`ActorTemplate`. `controller.agentImage` and its `IMAGE_*` environment values
-belonged to the removed deployment-backed Agent API and are intentionally absent
-from this chart. `image_refs` contains only the chart-installed `controller` and
-`ui`; Codex remains separate under `runtime_images.codexHarness`. Neither runtime
-is activated merely by installing the chart. The application and CRD chart
-entries carry explicit versions and digest-qualified `oci://` references. The
-evidence also records the exact `source_repository`, `source_commit`, and
-`helm/kagent` Git tree. Its chart-source contract proves that upstream commit
-`059c01b68584dea113ccdf80f2e356c2d051e02a` removed the obsolete
-`controller.skillsInitImage` value and `skills-init` container; neither is
-reintroduced by this fork. `release-evidence.json` intentionally has no
-`runtime_images.claudeHarness` entry.
+If a build fails after acquiring the immutable lock, do not overwrite or delete
+the partial release. Review its receipt and issue a new `.kap.<sequence>` tag.
 
-### Docker-less Cloud Build fallback
+## 3. Local Agent Host release
 
-Use `cloudbuild.fork-preview.yaml` only when the reviewed GitHub Actions rail
-cannot run. The submitter does not need Docker: Cloud Build checks out the
-exact public commit, creates a digest-pinned Go/Helm/jq tool image, installs
-QEMU, and uses Buildx on the remote worker. It publishes the four multi-platform
-images and two OCI charts required by the deployment evidence; it does not
-publish the optional native adapter archives or GitHub artifact attestations
-made by the primary workflow. BuildKit still attaches maximum-mode provenance
-and SBOM manifests to each multi-platform image, while the GCS checksum bundle
-and Cloud Build identity form the fallback publication receipt.
+The Local Agent Host is released independently after its exact Substrate pin
+passes with `GOWORK=off`. Its native release creates Node-free Linux and macOS
+archives for amd64 and arm64. The archives contain only the Go host and control
+binaries; provider CLIs and credentials are never bundled.
 
-The fallback deliberately does not create or push a Git tag and does not call
-the GitHub Release API. OCI publication is not transactional. Every final ref
-is checked for absence before publication; images are built under unique
-candidate aliases first, their BuildKit digests are recorded, and the exact
-digest-addressed indexes are required to contain only `linux/amd64` and
-`linux/arm64` runtime manifests before any final alias can be written. Only then
-are they carbon-copied to the final version aliases. Charts are packaged twice
-and byte-compared before final image promotion, then pushed last. If any final ref
-is left behind by a failed run, do not overwrite or delete it: inspect the
-receipt and issue a new preview sequence.
+The host authenticates outbound to kagent and starts Codex or Claude as a local
+process or container when instructed by kagent. Temporal calls only the
+in-cluster kagent AgentInstance/A2A endpoint; it never calls the Local Agent
+Host, Codex, or Claude directly.
 
-One-time GCP setup requires a dedicated user-managed Cloud Build service
-account, a dedicated evidence bucket, and an exact Secret Manager version
-containing a GitHub personal access token (classic) with only
-`write:packages`. Grant the build service account:
+## 4. Promote the GKE candidate
 
-- `roles/logging.logWriter` in the build project;
-- `roles/secretmanager.secretAccessor` on that one secret;
-- `roles/storage.objectCreator` on that one evidence bucket.
-
-The human submitter needs permission to create and inspect Cloud Builds and
-`roles/iam.serviceAccountUser` on the build service account. The caller also
-needs `roles/storage.objectViewer` on the evidence bucket for the post-build
-download. The Cloud Build worker needs outbound HTTPS access to GitHub, GHCR,
-the public Go proxy/checksum database, Docker Hub, `cgr.dev`, and the provider
-CLI release endpoints. Package visibility is a separate GitHub setting: make
-the published packages public, or configure GKE image-pull credentials, before
-deployment.
-
-Set the reviewed coordinates without reusing common system environment names:
-
-```sh
-export KAGENT_PREVIEW_PROJECT='YOUR_GCP_PROJECT'
-export KAGENT_PREVIEW_REGION='YOUR_CLOUD_BUILD_REGION'
-export KAGENT_PREVIEW_BUILD_SA="kagent-preview-publisher@${KAGENT_PREVIEW_PROJECT}.iam.gserviceaccount.com"
-export KAGENT_PREVIEW_EVIDENCE_BUCKET='YOUR_DEDICATED_BUCKET'
-export KAGENT_PREVIEW_GHCR_SECRET_VERSION="projects/${KAGENT_PREVIEW_PROJECT}/secrets/kagent-ghcr-write/versions/EXACT_VERSION"
-export KAGENT_PREVIEW_VERSION='0.0.0-external-slot.kap.1'
-export KAGENT_PREVIEW_COMMIT='REVIEWED_FULL_40_CHARACTER_COMMIT'
-```
-
-Authenticate interactively when required, then fail closed on source and
-GitHub release state before submitting:
-
-```sh
-gcloud auth login
-gcloud config set project "${KAGENT_PREVIEW_PROJECT}"
-gcloud auth print-access-token >/dev/null
-gh auth status
-
-git fetch origin yourown-chat
-test "$(git rev-parse HEAD)" = "${KAGENT_PREVIEW_COMMIT}"
-git merge-base --is-ancestor "${KAGENT_PREVIEW_COMMIT}" origin/yourown-chat
-test -z "$(git status --porcelain)"
-test -z "$(git ls-remote --tags origin "refs/tags/v${KAGENT_PREVIEW_VERSION}")"
-test "$(gh api repos/pilprod/kagent/immutable-releases --jq .enabled)" = true
-if gh release view "v${KAGENT_PREVIEW_VERSION}" >/dev/null 2>&1; then
-  printf 'release already exists\n' >&2
-  exit 1
-fi
-```
-
-Submit no local source. The config clones and verifies the exact remote commit,
-so ignored or dirty workstation files cannot enter an artifact:
-
-```sh
-KAGENT_PREVIEW_BUILD_ID="$(
-  gcloud builds submit \
-    --async \
-    --no-source \
-    --project "${KAGENT_PREVIEW_PROJECT}" \
-    --region "${KAGENT_PREVIEW_REGION}" \
-    --config cloudbuild.fork-preview.yaml \
-    --service-account "projects/${KAGENT_PREVIEW_PROJECT}/serviceAccounts/${KAGENT_PREVIEW_BUILD_SA}" \
-    --substitutions "_VERSION=${KAGENT_PREVIEW_VERSION},_SOURCE_COMMIT=${KAGENT_PREVIEW_COMMIT},_GHCR_USERNAME=pilprod,_GHCR_SECRET_VERSION=${KAGENT_PREVIEW_GHCR_SECRET_VERSION},_EVIDENCE_BUCKET=${KAGENT_PREVIEW_EVIDENCE_BUCKET}" \
-    --format 'value(id)'
-)"
-test -n "${KAGENT_PREVIEW_BUILD_ID}"
-gcloud builds log --stream "${KAGENT_PREVIEW_BUILD_ID}" \
-  --project "${KAGENT_PREVIEW_PROJECT}" \
-  --region "${KAGENT_PREVIEW_REGION}"
-test "$(
-  gcloud builds describe "${KAGENT_PREVIEW_BUILD_ID}" \
-    --project "${KAGENT_PREVIEW_PROJECT}" \
-    --region "${KAGENT_PREVIEW_REGION}" \
-    --format 'value(status)'
-)" = SUCCESS
-```
-
-Download the build-specific receipt and verify it before creating any source
-tag. Use a fresh temporary directory; the Cloud Build output contains
-digest-qualified chart-installed `controller` and `ui` refs, the separately
-activated `kagentHarness` and `codexHarness` runtime refs, both OCI chart refs
-and versions, chart archives, checksums, and the Cloud Build receipt:
-
-```sh
-KAGENT_PREVIEW_RECEIPT_DIR="$(mktemp -d)"
-gcloud storage cp \
-  "gs://${KAGENT_PREVIEW_EVIDENCE_BUCKET}/kagent/${KAGENT_PREVIEW_VERSION}/${KAGENT_PREVIEW_BUILD_ID}/*" \
-  "${KAGENT_PREVIEW_RECEIPT_DIR}/"
-(cd "${KAGENT_PREVIEW_RECEIPT_DIR}" && sha256sum --check SHA256SUMS)
-(cd "${KAGENT_PREVIEW_RECEIPT_DIR}" && sha256sum --check release-evidence.json.sha256)
-jq -e \
-  --arg commit "${KAGENT_PREVIEW_COMMIT}" \
-  --arg version "${KAGENT_PREVIEW_VERSION}" '
-    .schemaVersion == 3 and
-    .source_repository == "https://github.com/pilprod/kagent" and
-    .source_commit == $commit and
-    .tag == ("v" + $version) and
-    (.image_refs | keys == ["controller", "ui"]) and
-    (.runtime_images | keys == ["codexHarness", "kagentHarness"]) and
-    (.charts | keys == ["application", "crds"]) and
-    .charts.application.version == $version and
-    .charts.crds.version == $version
-  ' "${KAGENT_PREVIEW_RECEIPT_DIR}/release-evidence.json" >/dev/null
-```
-
-Only after that receipt and its six registry digests have been reviewed, create
-the annotated tag at the already-published source commit. The tag is the last
-source coordinate, followed by a draft prerelease that is published only after
-its uploads are complete:
-
-```sh
-git fetch origin yourown-chat
-git merge-base --is-ancestor "${KAGENT_PREVIEW_COMMIT}" origin/yourown-chat
-test -z "$(git ls-remote --tags origin "refs/tags/v${KAGENT_PREVIEW_VERSION}")"
-git tag -a "v${KAGENT_PREVIEW_VERSION}" "${KAGENT_PREVIEW_COMMIT}" \
-  -m "kagent fork preview v${KAGENT_PREVIEW_VERSION}"
-git push origin "refs/tags/v${KAGENT_PREVIEW_VERSION}"
-
-gh release create "v${KAGENT_PREVIEW_VERSION}" \
-  --repo pilprod/kagent \
-  --verify-tag \
-  --draft \
-  --prerelease \
-  --title "kagent fork preview v${KAGENT_PREVIEW_VERSION}" \
-  --notes 'Immutable YourOwn.Chat preview; deploy only digest-qualified refs from release-evidence.json.'
-gh release upload "v${KAGENT_PREVIEW_VERSION}" \
-  --repo pilprod/kagent \
-  "${KAGENT_PREVIEW_RECEIPT_DIR}"/*
-gh release edit "v${KAGENT_PREVIEW_VERSION}" \
-  --repo pilprod/kagent --draft=false
-```
-
-Pushing the tag may still enqueue the billing-blocked GitHub Actions workflow;
-its overwrite guards will reject the already-published OCI version. The Cloud
-Build receipt, not that failed duplicate run, is the publication evidence for
-this fallback.
-
-## 3. Publish the Local Agent Host
-
-After its exact Substrate pin passes with `GOWORK=off`, create an annotated
-`v<major>.<minor>.<patch>` tag on a commit reachable from the repository's
-default branch. `native-release.yml` builds reproducible Node-free archives for
-Linux and macOS, amd64 and arm64. The archives contain only the Go host and
-control binaries; provider CLIs and credentials are never bundled.
-
-## 4. Assemble the GKE candidate
-
-Verify the checksums and provenance of both release manifests. Render the
-ExternalSlot testbed only from kagent `release-evidence.json`:
+Consume only the generation-qualified private release evidence and its
+digest-qualified image/chart references. Render the ExternalSlot testbed from
+that evidence:
 
 ```sh
 ./examples/external-slot-testbed/render.sh codex ./release-evidence.json \
   > /tmp/kagent-codex-testbed.yaml
 ```
 
-Use the app-gcp pin helper to validate the Substrate handoff and produce only
-the immutable part of the vendor bundle. Complete the reviewed namespaces,
-endpoints, database bindings, WorkerPool image, and flow declarations
-separately; the helper deliberately refuses to invent them.
-
-Temporal talks only to the in-cluster kagent AgentInstance/A2A endpoint. It
-does not call the Local Agent Host, Codex, or Claude directly. Apply the final
-digest-pinned bundle to GKE only after a separate infrastructure approval.
+The `app-gcp` release pipeline promotes the reviewed candidate to the GKE
+environment. The final bundle supplies the namespace, endpoints, database
+bindings, WorkerPool image, and flow declarations; the kagent release does not
+invent those infrastructure values. Promote `dev.kagent.yourown.chat` first,
+run the local Codex agent smoke test without port forwarding, and promote the
+same immutable release to `kagent.yourown.chat` only after that verification.
