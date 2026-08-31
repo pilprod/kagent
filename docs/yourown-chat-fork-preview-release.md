@@ -28,7 +28,7 @@ guard cannot protect old commits by itself. The repository-level workflow state
 is therefore part of the private-only boundary. Before creating any tag, verify
 that both public publishers remain `disabled_manually` in `pilprod/kagent`:
 
-- `Fork immutable preview release` (workflow ID `346150199`);
+- `Retired public fork preview release` (workflow ID `346150199`);
 - `Tag and Push` (workflow ID `340304832`).
 
 Re-enabling either workflow invalidates the private-only release precondition,
