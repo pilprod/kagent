@@ -45,7 +45,7 @@ workflow_state="$({
 jq -e '
   ([.workflows[] |
     select(.id == 346150199 and
-      .name == "Fork immutable preview release" and
+      .name == "Retired public fork preview release" and
       .state == "disabled_manually")] | length) == 1 and
   ([.workflows[] |
     select(.id == 340304832 and

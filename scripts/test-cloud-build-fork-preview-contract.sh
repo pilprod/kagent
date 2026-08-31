@@ -82,7 +82,7 @@ if not re.search(
 for fragment in (
     "actions/workflows?per_page=100",
     ".id == 346150199",
-    '.name == "Fork immutable preview release"',
+    '.name == "Retired public fork preview release"',
     ".id == 340304832",
     '.name == "Tag and Push"',
     '.state == "disabled_manually"',
