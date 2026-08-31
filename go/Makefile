@@ -222,9 +222,12 @@ define go-install-tool
 set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
-rm -f $(1) || true ;\
-GOBIN=$(LOCALBIN) go install $${package} ;\
-mv $(1) $(1)-$(3) ;\
+install_dir="$$(mktemp -d "$(LOCALBIN)/.$(notdir $(1)).install.XXXXXX")" ;\
+trap 'rm -rf "$${install_dir}"' 0 1 2 15 ;\
+GOBIN="$${install_dir}" go install $${package} ;\
+mv "$${install_dir}/$(notdir $(1))" "$(1)-$(3)" ;\
+rmdir "$${install_dir}" ;\
+trap - 0 1 2 15 ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef

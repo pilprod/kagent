@@ -9,6 +9,7 @@ chart_script="${root_dir}/scripts/cloud-build-fork-preview-charts.sh"
 assembler="${root_dir}/scripts/assemble-fork-preview-release-evidence.py"
 receipt_finalizer="${root_dir}/scripts/finalize-cloud-build-fork-preview-receipt.py"
 source_verifier="${root_dir}/scripts/verify-cloud-build-fork-preview-source.sh"
+go_makefile="${root_dir}/go/Makefile"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/kagent-cloud-build-contract.XXXXXX")"
 trap 'rm -rf -- "${tmp_dir}"' EXIT
 
@@ -23,18 +24,28 @@ for path in \
   "${chart_script}" \
   "${assembler}" \
   "${receipt_finalizer}" \
-  "${source_verifier}"; do
+  "${source_verifier}" \
+  "${go_makefile}"; do
   test -f "${path}" || fail "required file is missing: ${path}"
 done
 
 python3 - \
   "${config}" "${toolbox}" "${chart_script}" \
-  "${assembler}" "${receipt_finalizer}" "${source_verifier}" <<'PY'
+  "${assembler}" "${receipt_finalizer}" "${source_verifier}" \
+  "${go_makefile}" <<'PY'
 import pathlib
 import re
 import sys
 
-config_path, toolbox_path, chart_path, assembler_path, finalizer_path, source_path = map(
+(
+    config_path,
+    toolbox_path,
+    chart_path,
+    assembler_path,
+    finalizer_path,
+    source_path,
+    makefile_path,
+) = map(
     pathlib.Path, sys.argv[1:]
 )
 config = config_path.read_text(encoding="utf-8")
@@ -43,6 +54,7 @@ chart_script = chart_path.read_text(encoding="utf-8")
 assembler = assembler_path.read_text(encoding="utf-8")
 finalizer = finalizer_path.read_text(encoding="utf-8")
 source_verifier = source_path.read_text(encoding="utf-8")
+go_makefile = makefile_path.read_text(encoding="utf-8")
 
 required_config = (
     "timeout: 60s\n",
@@ -90,6 +102,29 @@ for fragment in (
 ):
     if fragment not in source_verifier:
         raise SystemExit(f"private release source verifier lost workflow-state gate: {fragment}")
+
+for fragment in (
+    'make -s envtest-path | tail -n1',
+    'test -x "${envtest_assets}/kube-apiserver"',
+    'test -x "${envtest_assets}/etcd"',
+    'export KUBEBUILDER_ASSETS="${envtest_assets}"',
+):
+    if fragment not in source_verifier:
+        raise SystemExit(f"private release source verifier lost cold envtest setup: {fragment}")
+if source_verifier.index('export KUBEBUILDER_ASSETS="${envtest_assets}"') > source_verifier.index(
+    '(cd "${repository_root}/go" && go test'
+):
+    raise SystemExit("private release must materialize envtest before parallel Go tests")
+
+for fragment in (
+    'mktemp -d "$(LOCALBIN)/.$(notdir $(1)).install.XXXXXX"',
+    'GOBIN="$${install_dir}" go install',
+    'mv "$${install_dir}/$(notdir $(1))" "$(1)-$(3)"',
+):
+    if fragment not in go_makefile:
+        raise SystemExit(f"Go tool install macro is not concurrency safe: {fragment}")
+if 'rm -f $(1) || true' in go_makefile:
+    raise SystemExit("Go tool install macro still deletes a shared output path")
 
 from_lines = [line for line in toolbox.splitlines() if line.startswith("FROM ")]
 if len(from_lines) != 4:
