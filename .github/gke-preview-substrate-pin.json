@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "status": "ready",
   "requiredCapabilities": [
     "pkg/api/v1alpha1.ActorTemplateSpec.WorkerProvider",
@@ -38,22 +38,36 @@
       "atecontroller",
       "atenet"
     ],
+    "auxiliaryComponents": [
+      "releaseVerifier"
+    ],
     "sourceImageRefs": {
       "agentgateway": "ghcr.io/kagent-dev/substrate/agentgateway@sha256:068028a256bd63c91fd6e85a471269c014747297b0ffa785feaef6967eb0c429",
       "ateapi": "ghcr.io/pilprod/substrate/ateapi@sha256:8a4cf985f809cc768e32091e39d45bce5f2e95fe43cd67f01d5e60c7df2ea868",
       "atecontroller": "ghcr.io/pilprod/substrate/atecontroller@sha256:0845893ae2ecfd15f580bc410db22c8daae0d6b0388eca67541154a6ec98f554",
-      "atenet": "ghcr.io/pilprod/substrate/atenet@sha256:01d96092c93fd623dbe051479a76573da551b56be29121b11b760d9067fc8c4c"
+      "atenet": "ghcr.io/pilprod/substrate/atenet@sha256:01d96092c93fd623dbe051479a76573da551b56be29121b11b760d9067fc8c4c",
+      "releaseVerifier": "ghcr.io/pilprod/substrate/substrate-release-verify@sha256:850d8d8ec018f49486b410a15dd38e965f1fbb4d02f8a8be36d5256f33eef74b"
     },
-    "version": "0.0.22-private.2",
+    "version": "0.0.22-private.3",
     "appVersion": "v0.0.22",
-    "registryDigest": "sha256:171b531f06758aa05cd10ed7ccfa9cbe4d70545a5205f1477b8f109072c7d3b1",
-    "packageSha256": "sha256:6c968361da78c2941357d8db5c7f2b1235a8e86723062982dce0599d7fd0b40e",
+    "registryDigest": "sha256:51beebd226d0d2755b96dc70cf03072210222ab18f1f370b7b7c63fdd770a3af",
+    "packageSha256": "sha256:b0cde45954bbe0338c1e7af42bc4164ca7348f6c5d4c25593a17077d0d2d3088",
+    "crds": {
+      "repository": "oci://europe-west3-docker.pkg.dev/yourown-chat/kagent-preview/substrate/helm",
+      "name": "substrate-crds",
+      "version": "0.0.22-private.3",
+      "appVersion": "v0.0.22",
+      "registryDigest": "sha256:5333915d94c5a17c94e33533cc4698967a746b0ec686a8f19aef713ed5cab2c2",
+      "packageSha256": "sha256:a6100ff38e55525a20b4a0afa461593d6027df6549da9b9074b1ae30f0ec59a4"
+    },
     "publication": {
       "sourceCommit": "e9ed68e587b56df2aa2a7f0267a744598c4d48b4",
       "sourceRef": "refs/tags/v0.0.22",
       "sourceTagObject": "00a6a684cea3b3feea67461cf79347332ec759ef",
-      "evidenceUri": "gs://yourown-chat-kagent-preview-evidence-europe-west3/substrate/0.0.22-private.2/release-evidence.json#1788214261713293",
-      "evidenceSha256": "sha256:8c08f87cf282f5d1f32225964fe3a9cec1540b560b9688f315e23d97062c5aa2"
+      "sourceTree": "2023bb47bda10ab2d974dabcad3008c574b2d010",
+      "chartTree": "9a8cd4e4a49ade2c5e8ea89dc6795d72e5565971",
+      "evidenceUri": "gs://yourown-chat-kagent-preview-evidence-europe-west3/substrate/0.0.22-private.3/release-evidence.json#1788220783329855",
+      "evidenceSha256": "sha256:b5aad6d44d359cd63fb2753c000579d948b1bb70c94bf0fbc3cdf21698c9789b"
     }
   }
 }
