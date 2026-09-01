@@ -36,7 +36,7 @@ RUN --mount=type=cache,target=/root/go/pkg/mod,rw             \
 FROM ${ALPINE_IMAGE}
 ARG TARGETPLATFORM
 
-RUN apk add --no-cache bash ca-certificates git && \
+RUN apk add --no-cache bash ca-certificates git 'openssl>=3.5.8-r0' && \
     mkdir -p /skills /plugins /data/plugins && \
     chown -R 65532:65532 /skills /plugins /data
 
