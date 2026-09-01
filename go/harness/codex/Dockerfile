@@ -28,6 +28,7 @@ ARG TARGETARCH
 ARG VERSION
 
 RUN apk add --no-cache bash ca-certificates git libgcc libstdc++ ripgrep \
+        'openssl>=3.5.8-r0' \
     && case "${TARGETARCH}" in \
         amd64) platform="x86_64-unknown-linux-musl"; checksum="${CODEX_AMD64_ARCHIVE_SHA256}" ;; \
         arm64) platform="aarch64-unknown-linux-musl"; checksum="${CODEX_ARM64_ARCHIVE_SHA256}" ;; \
