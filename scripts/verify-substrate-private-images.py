@@ -22,6 +22,15 @@ EXPECTED_RELEASE_PREFIX = (
     f"{EXPECTED_REGISTRY_HOST}/yourown-chat/kagent-preview/substrate"
 )
 EXPECTED_COMPONENTS = ("agentgateway", "ateapi", "atecontroller", "atenet")
+EXPECTED_AUXILIARY_COMPONENTS = ("releaseVerifier",)
+EXPECTED_IMAGE_COMPONENTS = EXPECTED_COMPONENTS + EXPECTED_AUXILIARY_COMPONENTS
+EXPECTED_COMPONENT_REPOSITORIES = {
+    "agentgateway": "agentgateway",
+    "ateapi": "ateapi",
+    "atecontroller": "atecontroller",
+    "atenet": "atenet",
+    "releaseVerifier": "substrate-release-verify",
+}
 EXPECTED_PLATFORMS = {
     "linux_amd64": ("linux", "amd64"),
     "linux_arm64": ("linux", "arm64"),
@@ -304,7 +313,8 @@ def _verify_component(
     _require(set(image) == {"ref", "digest"}, f"evidence image {component} has unexpected fields")
     index_digest = image.get("digest")
     _require(_valid_digest(index_digest), f"evidence image digest is invalid for {component}")
-    expected_ref = f"{EXPECTED_RELEASE_PREFIX}/{component}@{index_digest}"
+    repository_name = EXPECTED_COMPONENT_REPOSITORIES[component]
+    expected_ref = f"{EXPECTED_RELEASE_PREFIX}/{repository_name}@{index_digest}"
     _require(image.get("ref") == expected_ref, f"evidence image ref is invalid for {component}")
     _require(
         isinstance(expected_platform_digests, dict)
@@ -318,7 +328,7 @@ def _verify_component(
         f"evidence platform digests must be distinct for {component}",
     )
 
-    repository = f"yourown-chat/kagent-preview/substrate/{component}"
+    repository = f"yourown-chat/kagent-preview/substrate/{repository_name}"
     index, _, _ = client.manifest(repository, index_digest, (OCI_INDEX, DOCKER_INDEX))
     required_index_fields = {"schemaVersion", "mediaType", "manifests"}
     _require(
@@ -444,7 +454,7 @@ def verify(
     )
     images = evidence.get("images")
     platform_digests = evidence.get("platform_image_digests")
-    expected_keys = set(EXPECTED_COMPONENTS)
+    expected_keys = set(EXPECTED_IMAGE_COMPONENTS)
     _require(isinstance(images, dict) and set(images) == expected_keys, "evidence image set is not exact")
     _require(
         isinstance(platform_digests, dict) and set(platform_digests) == expected_keys,
@@ -452,7 +462,7 @@ def verify(
     )
     encoded_auth = _decode_registry_auth(registry_config)
     client = RegistryClient(encoded_auth, opener=opener)
-    for component in EXPECTED_COMPONENTS:
+    for component in EXPECTED_IMAGE_COMPONENTS:
         _verify_component(client, component, images[component], platform_digests[component])
 
 

@@ -42,21 +42,24 @@ and fails before building if either public publisher has been re-enabled.
 of the following to one reviewed source release:
 
 - public `github.com/pilprod/substrate` Go module `v0.0.22`, with its checksum,
-  annotated source tag, and source commit;
-- private application chart
-  `oci://europe-west3-docker.pkg.dev/yourown-chat/kagent-preview/substrate/helm/substrate:0.0.22-private.2`,
-  including registry digest and package SHA-256;
+  annotated source tag, source commit, source tree, and chart tree;
+- private application and CRD charts at version `0.0.22-private.3`, including
+  the registry digest and package SHA-256 of each chart;
 - generation-qualified private release evidence URI and its SHA-256;
 - profile `external-control-plane-only`;
-- exactly `agentgateway`, `ateapi`, `atecontroller`, and `atenet` for both
-  `linux/amd64` and `linux/arm64`.
+- exactly four runtime components (`agentgateway`, `ateapi`, `atecontroller`,
+  and `atenet`) plus the auxiliary `releaseVerifier`, with a private copied
+  index for both `linux/amd64` and `linux/arm64`.
 
-The verifier checks the public Go proxy and checksum database, annotated source
-tag, exact private chart, exact evidence object, scan policy, source-to-private
-copy provenance, and the private GAR image indexes. For every required image it
-also fetches the two declared child manifests and verifies their digests; only
-valid `unknown/unknown` attestation descriptors may accompany the two runtime
-platforms.
+Pin schema 3 consumes producer evidence schema
+`yourown.chat/substrate-private-gar-release/v2`. The verifier checks the public
+Go proxy and checksum database, annotated source tag, both exact private charts,
+the exact evidence object and Helm values, scan policy, source-to-private copy
+provenance, and all five private GAR image indexes. For every image it also
+fetches the two declared child manifests and verifies their digests; only valid
+`unknown/unknown` attestation descriptors may accompany the two runtime
+platforms. `releaseVerifier` is a deployment-time verification image. It is not
+a Substrate runtime component, chart workload, or Helm image-digest value.
 
 The release job supplies two short-lived inputs:
 
@@ -89,11 +92,15 @@ SUBSTRATE_RELEASE_EVIDENCE_URI='gs://bucket/substrate/version/release-evidence.j
 ## 2. Publish the kagent fork preview
 
 Merge the reviewed source to the fork branch first. Create an annotated tag on
-the merge commit with this coordinate:
+the merge commit with this coordinate (the current successor is
+`gcp-v0.0.0-external-slot.kap.4`):
 
 ```text
 gcp-v<major>.<minor>.<patch>-<label>.kap.<sequence>
 ```
+
+Never move or reuse `gcp-v0.0.0-external-slot.kap.3`; its failed publication
+coordinate remains immutable.
 
 Apply the exact merge commit and generation-qualified Substrate evidence URI in
 `app-gcp`. After the Terraform plan shows only the expected publisher update,

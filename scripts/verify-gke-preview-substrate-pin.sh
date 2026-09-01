@@ -8,13 +8,17 @@ private_image_verifier="${root_dir}/scripts/verify-substrate-private-images.py"
 expected_chart_repository="oci://europe-west3-docker.pkg.dev/yourown-chat/kagent-preview/substrate/helm"
 expected_registry_host="europe-west3-docker.pkg.dev"
 expected_source_tag_object="00a6a684cea3b3feea67461cf79347332ec759ef"
+expected_source_tree="2023bb47bda10ab2d974dabcad3008c574b2d010"
+expected_chart_tree="9a8cd4e4a49ade2c5e8ea89dc6795d72e5565971"
 expected_supported_profiles='["external-control-plane-only"]'
 expected_required_components='["agentgateway","ateapi","atecontroller","atenet"]'
+expected_auxiliary_components='["releaseVerifier"]'
 expected_source_image_refs='{
   "agentgateway": "ghcr.io/kagent-dev/substrate/agentgateway@sha256:068028a256bd63c91fd6e85a471269c014747297b0ffa785feaef6967eb0c429",
   "ateapi": "ghcr.io/pilprod/substrate/ateapi@sha256:8a4cf985f809cc768e32091e39d45bce5f2e95fe43cd67f01d5e60c7df2ea868",
   "atecontroller": "ghcr.io/pilprod/substrate/atecontroller@sha256:0845893ae2ecfd15f580bc410db22c8daae0d6b0388eca67541154a6ec98f554",
-  "atenet": "ghcr.io/pilprod/substrate/atenet@sha256:01d96092c93fd623dbe051479a76573da551b56be29121b11b760d9067fc8c4c"
+  "atenet": "ghcr.io/pilprod/substrate/atenet@sha256:01d96092c93fd623dbe051479a76573da551b56be29121b11b760d9067fc8c4c",
+  "releaseVerifier": "ghcr.io/pilprod/substrate/substrate-release-verify@sha256:850d8d8ec018f49486b410a15dd38e965f1fbb4d02f8a8be36d5256f33eef74b"
 }'
 
 fail() {
@@ -38,27 +42,48 @@ test -f "${pin_file}" || fail "pin manifest does not exist: ${pin_file}"
 jq -e \
   --arg expected_chart_repository "${expected_chart_repository}" \
   --arg expected_source_tag_object "${expected_source_tag_object}" \
+  --arg expected_source_tree "${expected_source_tree}" \
+  --arg expected_chart_tree "${expected_chart_tree}" \
   --argjson expected_supported_profiles "${expected_supported_profiles}" \
   --argjson expected_required_components "${expected_required_components}" \
+  --argjson expected_auxiliary_components "${expected_auxiliary_components}" \
   --argjson expected_source_image_refs "${expected_source_image_refs}" '
-  .schemaVersion == 2 and
+  .schemaVersion == 3 and
   (.status == "blocked" or .status == "ready") and
+  (
+    (.status == "ready" and
+      (keys | sort) == ["goModule", "helmChart", "lastIncompatiblePublicRelease", "requiredCapabilities", "schemaVersion", "status"]) or
+    (.status == "blocked" and
+      (keys | sort) == ["blocker", "goModule", "helmChart", "lastIncompatiblePublicRelease", "requiredCapabilities", "schemaVersion", "status"])
+  ) and
   .requiredCapabilities == [
     "pkg/api/v1alpha1.ActorTemplateSpec.WorkerProvider",
     "pkg/api/v1alpha1.WorkerProviderExternalSlot",
     "api.Control.OpenActorIngress",
     "api.ActorIngressFrame"
   ] and
+  (.lastIncompatiblePublicRelease | keys | sort) == ["goModuleVersion", "helmChartVersion"] and
+  (.goModule | keys | sort) == ["origin", "replacement", "requiredPath"] and
   .goModule.requiredPath == "github.com/agent-substrate/substrate" and
+  (.goModule.replacement | keys | sort) == ["goModSum", "path", "sum", "version"] and
   .goModule.replacement.path == "github.com/pilprod/substrate" and
+  (.goModule.origin | keys | sort) == ["commit", "ref", "url", "vcs"] and
   .goModule.origin.vcs == "git" and
   .goModule.origin.url == "https://github.com/pilprod/substrate" and
+  (.helmChart | keys | sort) == ["appVersion", "auxiliaryComponents", "crds", "name", "packageSha256", "publication", "registryDigest", "repository", "requiredComponents", "sourceImageRefs", "supportedProfiles", "version"] and
   .helmChart.repository == $expected_chart_repository and
   .helmChart.name == "substrate" and
   .helmChart.supportedProfiles == $expected_supported_profiles and
   .helmChart.requiredComponents == $expected_required_components and
+  .helmChart.auxiliaryComponents == $expected_auxiliary_components and
   .helmChart.sourceImageRefs == $expected_source_image_refs and
-  .helmChart.publication.sourceTagObject == $expected_source_tag_object
+  (.helmChart.publication | keys | sort) == ["chartTree", "evidenceSha256", "evidenceUri", "sourceCommit", "sourceRef", "sourceTagObject", "sourceTree"] and
+  .helmChart.publication.sourceTagObject == $expected_source_tag_object and
+  .helmChart.publication.sourceTree == $expected_source_tree and
+  .helmChart.publication.chartTree == $expected_chart_tree and
+  (.helmChart.crds | keys | sort) == ["appVersion", "name", "packageSha256", "registryDigest", "repository", "version"] and
+  .helmChart.crds.repository == $expected_chart_repository and
+  .helmChart.crds.name == "substrate-crds"
 ' "${pin_file}" >/dev/null || fail "pin manifest semantic identity contract is malformed"
 
 pin_status="$(jq -er '.status' "${pin_file}")"
@@ -75,13 +100,19 @@ if [[ "${pin_status}" == "blocked" ]]; then
     (.goModule.origin.ref | test("^refs/tags/v")) and
     (.helmChart.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-private\\.[1-9][0-9]*$")) and
     (.helmChart.appVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+    (.helmChart.crds.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-private\\.[1-9][0-9]*$")) and
+    (.helmChart.crds.appVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
     .helmChart.registryDigest == null and
     .helmChart.packageSha256 == null and
+    .helmChart.crds.registryDigest == null and
+    .helmChart.crds.packageSha256 == null and
     .helmChart.publication.evidenceUri == null and
     .helmChart.publication.evidenceSha256 == null and
     .goModule.origin.ref == ("refs/tags/" + .goModule.replacement.version) and
     ("v" + (.helmChart.version | split("-")[0])) == .goModule.replacement.version and
     .helmChart.appVersion == .goModule.replacement.version and
+    .helmChart.crds.version == .helmChart.version and
+    .helmChart.crds.appVersion == .helmChart.appVersion and
     .helmChart.publication.sourceCommit == .goModule.origin.commit and
     .helmChart.publication.sourceRef == .goModule.origin.ref
   ' "${pin_file}" >/dev/null || fail "blocked pin manifest must bind the pending private mirror to the immutable source"
@@ -98,13 +129,19 @@ jq -e '
   (.goModule.origin.ref | test("^refs/tags/v")) and
   (.helmChart.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-private\\.[1-9][0-9]*$")) and
   (.helmChart.appVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+  (.helmChart.crds.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+-private\\.[1-9][0-9]*$")) and
+  (.helmChart.crds.appVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
   (.helmChart.registryDigest | test("^sha256:[0-9a-f]{64}$")) and
   (.helmChart.packageSha256 | test("^sha256:[0-9a-f]{64}$")) and
+  (.helmChart.crds.registryDigest | test("^sha256:[0-9a-f]{64}$")) and
+  (.helmChart.crds.packageSha256 | test("^sha256:[0-9a-f]{64}$")) and
   (.helmChart.publication.evidenceUri | test("^gs://[^/]+/.+#[1-9][0-9]*$")) and
   (.helmChart.publication.evidenceSha256 | test("^sha256:[0-9a-f]{64}$")) and
   .goModule.origin.ref == ("refs/tags/" + .goModule.replacement.version) and
   ("v" + (.helmChart.version | split("-")[0])) == .goModule.replacement.version and
   .helmChart.appVersion == .goModule.replacement.version and
+  .helmChart.crds.version == .helmChart.version and
+  .helmChart.crds.appVersion == .helmChart.appVersion and
   .helmChart.publication.sourceCommit == .goModule.origin.commit and
   .helmChart.publication.sourceRef == .goModule.origin.ref
 ' "${pin_file}" >/dev/null || fail "pin manifest is malformed or versions are incompatible"
@@ -115,6 +152,12 @@ chart_version="$(jq -er '.helmChart.version' "${pin_file}")"
 chart_app_version="$(jq -er '.helmChart.appVersion' "${pin_file}")"
 chart_registry_digest="$(jq -er '.helmChart.registryDigest' "${pin_file}")"
 chart_package_sha256="$(jq -er '.helmChart.packageSha256' "${pin_file}")"
+crds_chart_repository="$(jq -er '.helmChart.crds.repository' "${pin_file}")"
+crds_chart_name="$(jq -er '.helmChart.crds.name' "${pin_file}")"
+crds_chart_version="$(jq -er '.helmChart.crds.version' "${pin_file}")"
+crds_chart_app_version="$(jq -er '.helmChart.crds.appVersion' "${pin_file}")"
+crds_chart_registry_digest="$(jq -er '.helmChart.crds.registryDigest' "${pin_file}")"
+crds_chart_package_sha256="$(jq -er '.helmChart.crds.packageSha256' "${pin_file}")"
 evidence_uri="$(jq -er '.helmChart.publication.evidenceUri' "${pin_file}")"
 evidence_sha256="$(jq -er '.helmChart.publication.evidenceSha256' "${pin_file}")"
 source_tag_object="$(jq -er '.helmChart.publication.sourceTagObject' "${pin_file}")"
@@ -145,6 +188,7 @@ test "$(sha256_file "${release_evidence}")" = "${evidence_sha256}" ||
   fail "private Substrate evidence SHA-256 does not match the declared pin"
 
 expected_chart_ref="${chart_repository}/${chart_name}@${chart_registry_digest}"
+expected_crds_chart_ref="${crds_chart_repository}/${crds_chart_name}@${crds_chart_registry_digest}"
 expected_release_prefix="${chart_repository#oci://}"
 expected_release_prefix="${expected_release_prefix%/helm}"
 origin_tag="${origin_ref#refs/tags/}"
@@ -157,16 +201,29 @@ jq -e \
   --arg chart_ref "${expected_chart_ref}" \
   --arg chart_digest "${chart_registry_digest}" \
   --arg package_sha256 "${chart_package_sha256}" \
+  --arg crds_chart_ref "${expected_crds_chart_ref}" \
+  --arg crds_chart_digest "${crds_chart_registry_digest}" \
+  --arg crds_package_sha256 "${crds_chart_package_sha256}" \
+  --arg source_tree "${expected_source_tree}" \
+  --arg chart_tree "${expected_chart_tree}" \
   --argjson expected_supported_profiles "${expected_supported_profiles}" \
   --argjson expected_required_components "${expected_required_components}" \
+  --argjson expected_auxiliary_components "${expected_auxiliary_components}" \
   --argjson expected_source_image_refs "${expected_source_image_refs}" '
-    .schema_version == "yourown.chat/substrate-private-gar-release/v1" and
+    def repository_name($component):
+      if $component == "releaseVerifier" then "substrate-release-verify" else $component end;
+    .schema_version == "yourown.chat/substrate-private-gar-release/v2" and
+    (keys | sort) == ["auxiliary_components", "charts", "copy_provenance", "deployment_class", "helm_set_values", "images", "platform_image_digests", "production_eligible", "publication", "required_components", "scan_policy", "schema_version", "source", "supported_profiles"] and
     .deployment_class == "dev-to-approved-prod" and
     .production_eligible == true and
+    (.source | keys | sort) == ["chart_tree", "commit", "repository", "tag", "tag_object", "tree"] and
     .source.repository == "https://github.com/pilprod/substrate" and
     .source.commit == $source_commit and
     .source.tag == $source_tag and
     .source.tag_object == $source_tag_object and
+    .source.tree == $source_tree and
+    .source.chart_tree == $chart_tree and
+    (.publication | keys | sort) == ["build_mode", "location", "project_id", "registry_visibility", "release_prefix", "release_version"] and
     .publication.project_id == "yourown-chat" and
     .publication.location == "europe-west3" and
     .publication.registry_visibility == "private" and
@@ -175,27 +232,46 @@ jq -e \
     .publication.release_prefix == $release_prefix and
     .supported_profiles == $expected_supported_profiles and
     .required_components == $expected_required_components and
+    .auxiliary_components == $expected_auxiliary_components and
+    (.copy_provenance | keys) == ["source_image_refs"] and
     .copy_provenance.source_image_refs == $expected_source_image_refs and
+    (.charts | keys) == ["application", "crds"] and
+    (.charts.application | keys | sort) == ["digest", "package_sha256", "ref", "release_name", "version"] and
+    .charts.application.release_name == "substrate" and
     .charts.application.ref == $chart_ref and
     .charts.application.version == $release_version and
     .charts.application.digest == $chart_digest and
     .charts.application.package_sha256 == $package_sha256 and
+    (.charts.crds | keys | sort) == ["digest", "package_sha256", "ref", "release_name", "version"] and
+    .charts.crds.release_name == "substrate-crds" and
+    .charts.crds.ref == $crds_chart_ref and
+    .charts.crds.version == $release_version and
+    .charts.crds.digest == $crds_chart_digest and
+    .charts.crds.package_sha256 == $crds_package_sha256 and
+    .helm_set_values == {
+      "image.registry": $release_prefix,
+      "image.digests.ateapi": .images.ateapi.digest,
+      "image.digests.atecontroller": .images.atecontroller.digest,
+      "image.digests.atenet": .images.atenet.digest,
+      "images.agentgateway": .images.agentgateway.ref
+    } and
+    (.scan_policy | keys | sort) == ["blocked_severities", "platforms", "scanner"] and
     .scan_policy.platforms == ["linux/amd64", "linux/arm64"] and
     .scan_policy.blocked_severities == ["HIGH", "CRITICAL"] and
     .scan_policy.scanner == "Google Artifact Analysis On-Demand Scanning" and
     (
       .images as $images |
       .platform_image_digests as $platform_image_digests |
-      ($images | keys) == ($expected_required_components | sort) and
-      ($platform_image_digests | keys) == ($expected_required_components | sort) and
+      ($images | keys) == (($expected_required_components + $expected_auxiliary_components) | sort) and
+      ($platform_image_digests | keys) == (($expected_required_components + $expected_auxiliary_components) | sort) and
       ([
-        $expected_required_components[] as $component |
+        ($expected_required_components + $expected_auxiliary_components)[] as $component |
         ($images[$component] | keys) == ["digest", "ref"] and
         ($images[$component].digest | test("^sha256:[0-9a-f]{64}$")) and
         $images[$component].digest ==
           ($expected_source_image_refs[$component] | split("@") | last) and
         $images[$component].ref ==
-          ($release_prefix + "/" + $component + "@" + $images[$component].digest) and
+          ($release_prefix + "/" + repository_name($component) + "@" + $images[$component].digest) and
         ($platform_image_digests[$component] | keys) == ["linux_amd64", "linux_arm64"] and
         ($platform_image_digests[$component].linux_amd64 | test("^sha256:[0-9a-f]{64}$")) and
         ($platform_image_digests[$component].linux_arm64 | test("^sha256:[0-9a-f]{64}$"))
@@ -288,6 +364,12 @@ test "$(awk '$1 == "name:" { print $2; exit }' <<<"${chart_metadata}")" = "${cha
 test "$(awk '$1 == "version:" { print $2; exit }' <<<"${chart_metadata}")" = "${chart_version}" || fail "private Helm chart version does not match"
 test "$(awk '$1 == "appVersion:" { print $2; exit }' <<<"${chart_metadata}")" = "${chart_app_version}" || fail "private Helm chart appVersion does not match"
 
+crds_chart_metadata="$(helm show chart "${crds_chart_repository}/${crds_chart_name}" --version "${crds_chart_version}" 2>&1)"
+test "$(awk '$1 == "Digest:" { print $2; exit }' <<<"${crds_chart_metadata}")" = "${crds_chart_registry_digest}" || fail "private CRD Helm registry digest does not match the declared pin"
+test "$(awk '$1 == "name:" { print $2; exit }' <<<"${crds_chart_metadata}")" = "${crds_chart_name}" || fail "private CRD Helm chart name does not match"
+test "$(awk '$1 == "version:" { print $2; exit }' <<<"${crds_chart_metadata}")" = "${crds_chart_version}" || fail "private CRD Helm chart version does not match"
+test "$(awk '$1 == "appVersion:" { print $2; exit }' <<<"${crds_chart_metadata}")" = "${crds_chart_app_version}" || fail "private CRD Helm chart appVersion does not match"
+
 chart_tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "${chart_tmp_dir}"' EXIT
 helm pull "${chart_repository}/${chart_name}" --version "${chart_version}" --destination "${chart_tmp_dir}" >/dev/null
@@ -296,4 +378,10 @@ test -f "${chart_package}" || fail "Helm did not download the pinned chart packa
 actual_chart_package_sha256="$(sha256_file "${chart_package}")"
 test "${actual_chart_package_sha256}" = "${chart_package_sha256}" || fail "private Helm package content does not match the declared pin"
 
-printf 'immutable public Substrate Go module and private Helm chart pin verified\n'
+helm pull "${crds_chart_repository}/${crds_chart_name}" --version "${crds_chart_version}" --destination "${chart_tmp_dir}" >/dev/null
+crds_chart_package="${chart_tmp_dir}/${crds_chart_name}-${crds_chart_version}.tgz"
+test -f "${crds_chart_package}" || fail "Helm did not download the pinned CRD chart package"
+actual_crds_chart_package_sha256="$(sha256_file "${crds_chart_package}")"
+test "${actual_crds_chart_package_sha256}" = "${crds_chart_package_sha256}" || fail "private CRD Helm package content does not match the declared pin"
+
+printf 'immutable public Substrate Go module and private Helm chart pins verified\n'

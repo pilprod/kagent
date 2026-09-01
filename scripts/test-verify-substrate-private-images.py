@@ -107,7 +107,7 @@ class ReleaseFixture:
                 }
             }
         }
-        for component in VERIFIER.EXPECTED_COMPONENTS:
+        for component in VERIFIER.EXPECTED_IMAGE_COMPONENTS:
             self._add_component(component, with_attestations=component == "agentgateway")
 
     def _image_manifest(self, component: str, architecture: str) -> dict[str, Any]:
@@ -160,7 +160,10 @@ class ReleaseFixture:
         }
 
     def _add_component(self, component: str, with_attestations: bool) -> None:
-        repository = f"yourown-chat/kagent-preview/substrate/{component}"
+        repository = (
+            "yourown-chat/kagent-preview/substrate/"
+            + VERIFIER.EXPECTED_COMPONENT_REPOSITORIES[component]
+        )
         self.repositories[component] = repository
         descriptors: list[dict[str, Any]] = []
         platform_digests: dict[str, str] = {}
@@ -211,8 +214,9 @@ class ReleaseFixture:
         index_digest, _, _ = self.registry.add(
             self.repositories[component], self.index_documents[component]
         )
+        repository_name = VERIFIER.EXPECTED_COMPONENT_REPOSITORIES[component]
         self.evidence["images"][component] = {
-            "ref": f"{VERIFIER.EXPECTED_RELEASE_PREFIX}/{component}@{index_digest}",
+            "ref": f"{VERIFIER.EXPECTED_RELEASE_PREFIX}/{repository_name}@{index_digest}",
             "digest": index_digest,
         }
 
@@ -264,7 +268,7 @@ class PrivateImageVerifierTests(unittest.TestCase):
         fixture = ReleaseFixture()
         VERIFIER.verify(fixture.evidence, fixture.registry_config, opener=fixture.registry)
 
-        expected_requests = 4 + 8 + 2
+        expected_requests = 17
         self.assertEqual(expected_requests, len(fixture.registry.requests))
         for request in fixture.registry.requests:
             self.assertEqual(
@@ -273,6 +277,49 @@ class PrivateImageVerifierTests(unittest.TestCase):
                 request.get_header("Authorization"),
             )
             self.assertEqual("identity", request.get_header("Accept-encoding"))
+
+        release_verifier_path = (
+            "/v2/yourown-chat/kagent-preview/substrate/"
+            "substrate-release-verify/manifests/"
+        )
+        release_verifier_requests = [
+            request
+            for request in fixture.registry.requests
+            if release_verifier_path in request.full_url
+        ]
+        self.assertEqual(3, len(release_verifier_requests))
+        self.assertFalse(
+            any(
+                "/substrate/releaseVerifier/" in request.full_url
+                for request in fixture.registry.requests
+            )
+        )
+
+    def test_rejects_missing_release_verifier_before_network(self) -> None:
+        fixture = ReleaseFixture()
+        del fixture.evidence["images"]["releaseVerifier"]
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "image set is not exact"):
+            VERIFIER.verify(fixture.evidence, fixture.registry_config, opener=fixture.registry)
+        self.assertEqual([], fixture.registry.requests)
+
+    def test_rejects_release_verifier_platform_digest_drift(self) -> None:
+        fixture = ReleaseFixture()
+        fixture.evidence["platform_image_digests"]["releaseVerifier"]["linux_arm64"] = (
+            "sha256:" + "f" * 64
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "does not match evidence"):
+            VERIFIER.verify(fixture.evidence, fixture.registry_config, opener=fixture.registry)
+
+    def test_rejects_release_verifier_key_as_repository_name(self) -> None:
+        fixture = ReleaseFixture()
+        image = fixture.evidence["images"]["releaseVerifier"]
+        image["ref"] = (
+            f"{VERIFIER.EXPECTED_RELEASE_PREFIX}/releaseVerifier@{image['digest']}"
+        )
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError, "evidence image ref is invalid for releaseVerifier"
+        ):
+            VERIFIER.verify(fixture.evidence, fixture.registry_config, opener=fixture.registry)
 
     def test_rejects_non_exact_component_set_before_network(self) -> None:
         fixture = ReleaseFixture()
